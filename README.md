@@ -209,6 +209,9 @@ docker run -p 8888:8888 \
 
 For the OAuth lane add `-e HINDSIGHT_API_TENANT_OAUTH_ENABLED=true -e
 HINDSIGHT_API_TENANT_OAUTH_ISSUER=https://authentik.example/application/o/hindsight-mcp`.
+The slim base ships no local embedding/reranking models, so point the server at
+a remote provider: `-e HINDSIGHT_API_EMBEDDINGS_PROVIDER=tei` (or `openai`/
+`gemini`) and `-e HINDSIGHT_API_RERANKER_PROVIDER=none` (or `tei`).
 The build imports the extension in the server's own interpreter, so a packaging
 mistake fails the build instead of the first authenticated request. A worker
 deployment needs the same `HINDSIGHT_API_TENANT_*` variables as the API, or
