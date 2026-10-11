@@ -6,9 +6,14 @@
 # tests/_stub/, which is why every push and PR runs them with no skip logic, no matrix and no
 # conditional gating.
 #
-# One check per job: test, lock-check, lint and fmt-check are four separate jobs so they run in
+# One check per job: lint, fmt-check, lock-check and test are four separate jobs so they run in
 # parallel and each shows up as its own required-check name. They are deliberately NOT chained
 # with `needs:` — all four start at once.
+#
+# Each job is just the environment (pinned actions, cache, runner) around ONE Taskfile target:
+# `task lint`, `task fmt-check`, `task lock-check`, `task test`. The commands live in
+# Taskfile.yaml, so the local gate `task check` and these checks are the same commands by
+# construction rather than by discipline.
 #
 # All four jobs cache the uv cache directory via setup-uv's enable-cache. That cache is per-job,
 # so the concurrent jobs overlap on the same key namespace: expect a cold miss for each and
@@ -34,12 +39,11 @@ permissions:
 
 jobs:
   # The four check jobs intentionally omit `name:`, so each job id IS the check-run name
-  # (`test`, `lock-check`, ...) that branch protection points at. Only `docker-build` overrides
-  # it, because that one is not a required check.
+  # (`lint`, `fmt-check`, ...) that branch protection points at. Only `docker-build` overrides it.
   #
-  # Each check job repeats the same two-step setup. The pins and their rationale are spelled out
-  # once, on the `test` job below; the other three point back at it.
-  test:
+  # Each check job repeats the same three-step setup trio. The pins and their rationale are
+  # spelled out once, on the `lint` job below; the other three point back at it.
+  lint:
     runs-on: ubuntu-latest
     steps:
       # v7, not v4 as originally sketched: actions/checkout@v4 declares `runs.using: node20`,
@@ -60,56 +64,61 @@ jobs:
         with:
           enable-cache: true
 
-      # `timeout 300` (GNU coreutils, present on ubuntu-latest) is the guard the local runs use
-      # too: both steps resolve and install from the network, and a stalled download should fail
-      # the job in five minutes rather than sit there burning the runner.
-      - name: uv sync
-        run: timeout 300 uv sync
+      # The two candidates named for this were checked and do not exist: both
+      # ardalanamini/setup-go-task and dcarbone/install-task-action return 404 as of 2026-10.
+      # go-task/setup-task is the Task org's own action (maintained, node24, last release
+      # 2026-08). `version` is left at its `3.x` default, matching the Taskfile's `version: "3"`.
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
 
-      - name: pytest (full offline suite)
-        run: timeout 300 uv run pytest
-
-  lock-check:
-    runs-on: ubuntu-latest
-    steps:
-      # Same setup pair as the `test` job — see the pin rationale there.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          enable-cache: true
-
-      # `uv lock --check` is non-mutating: it exits non-zero when uv.lock disagrees with
-      # pyproject.toml instead of quietly re-resolving. That matters here because the image
-      # build and the release both go through the lock, so a stale lock is a broken release.
-      - name: lock-check (uv.lock matches pyproject.toml)
-        run: uv lock --check
-
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      # Same setup pair as the `test` job — see the pin rationale there.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          enable-cache: true
-
-      # Ruff's own default rule set — see [tool.ruff] in pyproject.toml. No `--select` here on
-      # purpose: the config is the one source of truth, so a local `uv run ruff check .` and this
-      # job can never disagree.
-      - name: ruff check
-        run: uv run ruff check .
+      # Ruff's own default rule set — see [tool.ruff] in pyproject.toml. No `--select` anywhere
+      # on purpose: the config is the one source of truth, so a local `task lint` and this job
+      # cannot disagree.
+      - name: task lint (ruff check)
+        run: task lint
 
   fmt-check:
     runs-on: ubuntu-latest
     steps:
-      # Same setup pair as the `test` job — see the pin rationale there.
+      # Same setup trio as the `lint` job — see the pin rationale there.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
 
-      - name: ruff format --check (non-mutating)
-        run: uv run ruff format --check .
+      - name: task fmt-check (ruff format --check, non-mutating)
+        run: task fmt-check
+
+  lock-check:
+    runs-on: ubuntu-latest
+    steps:
+      # Same setup trio as the `lint` job — see the pin rationale there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+
+      # `uv lock --check` is non-mutating: it exits non-zero when uv.lock disagrees with
+      # pyproject.toml instead of quietly re-resolving. That matters here because the image
+      # build and the release both go through the lock, so a stale lock is a broken release.
+      - name: task lock-check (uv.lock matches pyproject.toml)
+        run: task lock-check
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Same setup trio as the `lint` job — see the pin rationale there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+
+      # `task test` depends on `install`, so this still runs `uv sync` before pytest — the sync
+      # carries the 5m cap, declared in the Taskfile next to the command rather than here.
+      - name: task test (full offline pytest suite)
+        run: task test
 
   # Optional and non-required: builds deploy/Dockerfile so the image cannot silently rot. The
   # container image is the deploy artifact, but the build is the slow, network-touching action
@@ -133,6 +142,10 @@ jobs:
   # is the requirement, not a thing to filter around, and a job-level path check would need an
   # extra dependency (e.g. dorny/paths-filter) anyway. Promote it to a required check if the
   # image becomes the real deploy path.
+  #
+  # No Taskfile target for this one, and no setup-task step: the build is the only thing here, and
+  # putting a `timeout`/tag convention in the Taskfile would add a second way to build the image
+  # that nothing else uses.
   docker-build:
     # `name` overrides the job id so the check-run reads as non-required in the PR's check list.
     # Same command PR4 validated locally, and the same one release.yml pushes from.
