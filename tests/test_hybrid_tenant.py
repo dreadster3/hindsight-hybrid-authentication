@@ -75,7 +75,7 @@ def test_schema_prefix_defaults_to_user():
 
 
 def test_schema_prefix_must_be_a_postgres_identifier():
-    for bad in ("1user", "has-dash", "has space", "", "drop;table"):
+    for bad in ("1user", "has-dash", "has space", "", "drop;table", "user\n"):
         with pytest.raises(ValueError, match="Invalid schema_prefix"):
             HybridTenantExtension({"users": USERS, "schema_prefix": bad})
 

@@ -182,6 +182,20 @@ def test_token_without_username_or_sub_is_rejected():
     run(_run)
 
 
+def test_user_id_with_trailing_newline_is_rejected():
+    async def _run():
+        server = JwksServer()
+        async with running(server) as ext:
+            await ext.on_startup()
+            # "$" would match before the trailing newline and mint schema
+            # "user_x\n"; the \Z anchor rejects the claim instead.
+            token = sign(KEY_A, preferred_username="X\n")
+            with pytest.raises(AuthenticationError, match="valid tenant schema"):
+                await ext.authenticate(RequestContext(api_key=token))
+
+    run(_run)
+
+
 def test_issuer_mismatch_is_rejected():
     async def _run():
         server = JwksServer()
@@ -274,9 +288,15 @@ def test_algorithm_downgrade_is_rejected():
         async with running(server) as ext:
             await ext.on_startup()
             # HS256 with the RSA public key material as the HMAC secret: the
-            # classic alg-confusion attempt. algorithms=["RS256"] blocks it.
-            token = jwt.encode({"iss": ISSUER, "sub": "x", "exp": int(time.time()) + 300}, "secret", algorithm="HS256")
-            with pytest.raises(AuthenticationError):
+            # classic alg-confusion attempt. A real kid keeps the token out of the
+            # "missing kid" path so decode is what rejects it, on algorithm alone.
+            token = jwt.encode(
+                {"iss": ISSUER, "sub": "x", "exp": int(time.time()) + 300},
+                "secret",
+                algorithm="HS256",
+                headers={"kid": KEY_A.kid},
+            )
+            with pytest.raises(AuthenticationError, match="algorithm"):
                 await ext.authenticate(RequestContext(api_key=token))
 
     run(_run)
@@ -336,13 +356,16 @@ def test_no_groups_allowlist_skips_the_groups_check():
 # ---------------------------------------------------------------------------
 
 
-def test_kid_miss_triggers_one_refresh_and_retry():
+def test_kid_miss_triggers_one_refresh_and_retry(monkeypatch):
     async def _run():
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(ext_module, "_monotonic", lambda: clock["t"])
         server = JwksServer(keys=[KEY_A])
         async with running(server) as ext:
             await ext.on_startup()
             assert server.fetches == 1
-            # Issuer rotates: the next request carries a key we have not cached.
+            # Issuer rotates, and enough time passes that a refresh is allowed.
+            clock["t"] += ext_module.JWKS_MIN_REFRESH_INTERVAL_SECONDS + 1
             server.keys = [KEY_B]
             token = sign(KEY_B)
             tc = await ext.authenticate(RequestContext(api_key=token))
@@ -352,11 +375,32 @@ def test_kid_miss_triggers_one_refresh_and_retry():
     run(_run)
 
 
-def test_kid_miss_twice_raises_authentication_error():
+def test_kid_miss_within_refresh_window_skips_refetch(monkeypatch):
     async def _run():
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(ext_module, "_monotonic", lambda: clock["t"])
         server = JwksServer(keys=[KEY_A])
         async with running(server) as ext:
             await ext.on_startup()
+            assert server.fetches == 1
+            # A garbage-kid token right after the warm must not trigger a fetch:
+            # otherwise a token flood hammers the issuer's JWKS endpoint.
+            token = sign(TestKey(kid="garbage", private=KEY_A.private))
+            with pytest.raises(AuthenticationError, match="signing key"):
+                await ext.authenticate(RequestContext(api_key=token))
+            assert server.fetches == 1
+
+    run(_run)
+
+
+def test_kid_miss_twice_raises_authentication_error(monkeypatch):
+    async def _run():
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(ext_module, "_monotonic", lambda: clock["t"])
+        server = JwksServer(keys=[KEY_A])
+        async with running(server) as ext:
+            await ext.on_startup()
+            clock["t"] += ext_module.JWKS_MIN_REFRESH_INTERVAL_SECONDS + 1
             token = sign(TestKey(kid="rotated-away", private=KEY_A.private))
             with pytest.raises(AuthenticationError, match="signing key"):
                 await ext.authenticate(RequestContext(api_key=token))
@@ -413,6 +457,18 @@ def test_startup_fails_fast_when_jwks_is_unreachable():
 def test_malformed_jwks_document_fails_startup():
     async def _run():
         server = JwksServer(body=b"not json")
+        ext = make_extension(server)
+        with pytest.raises(RuntimeError, match="unreachable"):
+            await ext.on_startup()
+
+    run(_run)
+
+
+def test_oversized_jwks_document_fails_startup():
+    async def _run():
+        # A body past the streaming size cap is rejected before it is parsed, so
+        # a broken or hostile endpoint cannot exhaust memory.
+        server = JwksServer(body=b"x" * (ext_module.MAX_JWKS_BYTES + 1))
         ext = make_extension(server)
         with pytest.raises(RuntimeError, match="unreachable"):
             await ext.on_startup()
