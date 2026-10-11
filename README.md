@@ -10,10 +10,10 @@ bank does not exist in the caller's schema. A user owns any number of banks
 inside their own schema (`coding-agent::<repo>`, personal, per-agent), which is
 the natural model once the schema *is* the boundary.
 
-One extension, two lanes, one resolver. Lane routing is by credential shape:
-configured static keys never contain `.`; a JWT always has exactly two. A
-credential that fails its lane is refused — no fallback to the other lane, no
-unauthenticated path.
+One extension, three lanes, one resolver. Lane routing is by credential shape:
+configured static keys never contain `.`; a JWT always has exactly two; anything
+else is an opaque bearer token. A credential that fails its lane is refused —
+no fallback to another lane, no unauthenticated path.
 
 ## Auth matrix
 
@@ -22,6 +22,7 @@ unauthenticated path.
 | pi extension (`~/.pi/agent/settings.json`) | static `apiToken` | exact match against env-declared keys (constant time) | env-paired `user_id` | per-repo banks inside `user_<id>` |
 | OpenWebUI tool server | static bearer (one key) | static key | dedicated `openwebui` service user | per-OpenWebUI-user banks inside `user_openwebui` via `X-Bank-Id: {{USER_ID}}` *(shared-schema caveat)* |
 | OAuth-capable MCP clients (Claude Code, IDEs, …) | authentik access token | local JWKS validation (PyJWT, cached keys from the issuer's `jwks` endpoint), RS256 only | `preferred_username` / `sub` claim | own banks inside `user_<id>` |
+| Opaque-token clients | authentik opaque token | RFC 7662 introspection (`POST` form-encoded, HTTP Basic auth) | `preferred_username` / `sub` from the introspection response | own banks inside `user_<id>` |
 | Machine clients (n8n, scripts) | authentik client-credentials token | same JWKS validation | the client's bound `user` | app-owned banks inside `user_<id>` |
 
 Missing/unknown credential → `AuthenticationError` → 401. No fallback to
@@ -42,6 +43,13 @@ All variables use the loader convention `HINDSIGHT_API_TENANT_<NAME>` →
 | `HINDSIGHT_API_TENANT_OAUTH_AUDIENCE` | no | — | Expected `aud` claim. Enforced only when set; unset disables the audience check. |
 | `HINDSIGHT_API_TENANT_OAUTH_JWKS_URL` | no | `{issuer}/jwks/` | JWKS endpoint. Must be `https` (`http` allowed only on loopback). |
 | `HINDSIGHT_API_TENANT_OAUTH_GROUPS_ALLOWLIST` | no | — | comma-separated authentik group names. When set, a token must carry at least one; otherwise rejected. |
+| `HINDSIGHT_API_TENANT_OAUTH_INTROSPECTION_URL` | no | — | RFC 7662 introspection endpoint, e.g. `https://authentik.example/application/o/introspect/`. Must be `https` (`http` allowed only on loopback). |
+| `HINDSIGHT_API_TENANT_OAUTH_INTROSPECTION_CLIENT_ID` | no | — | Introspection client id (HTTP Basic auth user). |
+| `HINDSIGHT_API_TENANT_OAUTH_INTROSPECTION_CLIENT_SECRET` | no | — | Introspection client secret (HTTP Basic auth password). Inject from an Infisical-style env secret, never into the image. |
+
+The three introspection variables are all-or-nothing: **all three set** →
+opaque-token introspection is active; **a partial trio** fails startup, naming
+the missing field (values are never echoed). There is no separate enable flag.
 
 ### Startup validation (fail fast)
 
@@ -55,6 +63,9 @@ Misconfiguration raises during load, not on the first request.
 - Error messages never echo key material — a key is named by its derived,
   non-secret `key_id` (sha256 prefix) in error text and in metering.
 - OAuth enabled → issuer present; issuer and JWKS URL `https` (loopback exempt).
+- Introspection trio all-or-nothing; a partial trio fails startup naming the
+  missing field; the introspection URL is `https` (loopback exempt). The client
+  secret is never echoed in error text.
 
 ### OAuth / JWKS behavior
 
@@ -72,6 +83,31 @@ Misconfiguration raises during load, not on the first request.
   unreachable. An unverifiable token is never accepted, so a broken lane fails
   the deploy rather than degrading.
 - Never logs or stores tokens; debug logs carry `kid`, `iss`, derived user id.
+
+### Token introspection mode
+
+Set all three `..._OAUTH_INTROSPECTION_*` variables to hand hindsight a single
+authentik client id/secret and have it validate opaque bearer tokens itself via
+RFC 7662. For any token that is neither a configured static key nor JWT-shaped,
+the extension POSTs `token=<token>` form-encoded to the introspection endpoint
+with HTTP Basic auth (client id/secret) and accepts only a response whose
+`active` is `true`. The user id comes from `preferred_username` or `sub`, `exp`
+is enforced when present (same 10 s leeway), and the groups allowlist applies —
+identical semantics to the JWKS lane.
+
+Prefer this over local JWKS when clients hold **opaque** tokens (nothing local
+to verify) or when you need **authentik-side session revocation** to take effect
+immediately: introspection asks the IdP on every request, so a revoked or
+deactivated token stops working at once. The cost is a **network hop to
+authentik per opaque-token request** (with a strict 10 s timeout). **JWT-shaped
+tokens keep using the JWKS lane even when introspection is configured** — the
+local path is faster and never regresses to a remote call.
+
+The lane is lazy: startup makes no call to authentik (unlike the JWKS warm-up,
+there is no credential to probe with), so the first opaque token pays the first
+hop. The token and the client secret are never logged or echoed. Supply the
+client secret through Infisical-style env injection (a Kubernetes Secret / env
+var), not baked into the image.
 
 ### Metering fields set after auth
 
