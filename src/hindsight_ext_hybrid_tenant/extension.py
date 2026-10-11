@@ -58,14 +58,18 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["HybridTenantExtension"]
 
-# Schema prefix must be a valid Postgres identifier component (letters, digits, underscores)
-_SCHEMA_PREFIX_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+# Schema prefix must be a valid Postgres identifier component (letters, digits, underscores).
+# \Z rather than $: $ also matches just before a trailing "\n", so an
+# operator-supplied "user\n" would pass validation and produce a schema name
+# Postgres would treat as a different identifier.
+_SCHEMA_PREFIX_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
 # User IDs appear in schema names, so they must be safe as a Postgres identifier
 # component: start with a letter/underscore, then letters/digits/underscore/dash.
 # Dashes are normalized to underscores and the whole id is lowercased before
 # building the schema name (Postgres folds unquoted identifiers to lowercase).
-_USER_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+# \Z, not $, so a signed claim ending in "\n" cannot slip through as "x\n".
+_USER_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\Z")
 
 # PostgreSQL truncates identifiers to NAMEDATALEN (63) bytes. An operator can
 # configure two distinct user ids that differ only past that boundary; both
@@ -92,6 +96,11 @@ JWT_LEEWAY_SECONDS = 10
 JWKS_CACHE_TTL_SECONDS = 600
 JWKS_TIMEOUT_SECONDS = 10.0
 MAX_JWKS_BYTES = 64 * 1024
+
+# Minimum age of the JWKS cache before a kid miss may force a refresh. A token
+# flood carrying garbage kids would otherwise trigger one upstream fetch per
+# request; a key rotated within this window is picked up by the TTL refresh.
+JWKS_MIN_REFRESH_INTERVAL_SECONDS = 30
 
 # Shortest credential accepted for the JWT lane (JWTs are typically 100+ chars).
 MIN_TOKEN_LENGTH = 20
@@ -208,6 +217,10 @@ class _JwksCache:
         can retry, never a 500 leaking the upstream error.
         """
         try:
+            # An empty key set also refetches here, bypassing the TTL: with no
+            # keys nothing can authenticate, so trade a burst of fetches during
+            # an issuer outage for fast recovery once keys reappear, rather than
+            # serving the outage for a full TTL.
             if not self._keys or _monotonic() - self._fetched_at > self._ttl:
                 await self.warm()
         except Exception as e:
@@ -216,6 +229,12 @@ class _JwksCache:
         if kid in self._keys:
             return self._keys[kid]
 
+        # kid miss — the issuer may have rotated keys since the last fetch, so
+        # refresh once and retry. Only when the cache is not already fresh: a
+        # token flood bearing garbage kids must not hammer the issuer's JWKS
+        # endpoint, and a just-fetched JWKS cannot contain the key either.
+        if _monotonic() - self._fetched_at < JWKS_MIN_REFRESH_INTERVAL_SECONDS:
+            raise AuthenticationError("Unable to find signing key for token")
         logger.debug("Signing key %s not cached, refreshing JWKS for possible rotation", kid)
         try:
             await self.warm()
