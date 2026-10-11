@@ -1,0 +1,12 @@
+# Keep the Docker build context to what the image actually consumes: the
+# extension package under src/ and deploy/Dockerfile. Sent on every build, so a
+# stale local .venv or .git would otherwise dwarf the digest-pinned base pull.
+# Also keeps dead local bytecode out of the image: the Dockerfile COPYs
+# src/hindsight_ext_hybrid_tenant/ verbatim, and __pycache__ written by whatever
+# local interpreter ran last would land in /app/extensions with it.
+__pycache__/
+.venv/
+.git
+.pytest_cache/
+tests/
+.pi/
