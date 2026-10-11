@@ -93,7 +93,7 @@ CONFIG = {
     "oauth_issuer": ISSUER,
     "oauth_jwks_url": JWKS_URL,
     "oauth_audience": AUDIENCE,
-    "oauth_client_url": INTROSPECT_URL,
+    "oauth_base_url": INTROSPECT_URL,
     "oauth_client_id": CLIENT_ID,
     "oauth_client_secret": CLIENT_SECRET,
 }
@@ -160,8 +160,8 @@ def test_partial_trio_never_echoes_the_supplied_secret():
 
 
 def test_introspection_endpoint_must_be_https():
-    config = dict(CONFIG, oauth_client_url="http://authentik.test/introspect/")
-    with pytest.raises(ValueError, match="CLIENT_URL"):
+    config = dict(CONFIG, oauth_base_url="http://authentik.test/introspect/")
+    with pytest.raises(ValueError, match="BASE_URL"):
         HybridTenantExtension(config)
 
 
@@ -488,7 +488,7 @@ def test_opaque_token_without_introspection_configured_is_refused():
         authentik = FakeAuthentik()
         async with running(
             authentik,
-            oauth_client_url="",
+            oauth_base_url="",
             oauth_client_id="",
             oauth_client_secret="",
         ) as ext:

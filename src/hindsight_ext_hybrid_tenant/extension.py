@@ -26,7 +26,7 @@ Configuration via environment variables, following the loader convention
     HINDSIGHT_API_TENANT_OAUTH_ENABLED=false                     # optional, default false
     HINDSIGHT_API_TENANT_OAUTH_ISSUER=...                        # required when OAuth is enabled (https)
     HINDSIGHT_API_TENANT_OAUTH_AUDIENCE / _JWKS_URL / _GROUPS_ALLOWLIST  # optional
-    HINDSIGHT_API_TENANT_OAUTH_CLIENT_URL / _CLIENT_ID / _CLIENT_SECRET  # all three, or none
+    HINDSIGHT_API_TENANT_OAUTH_BASE_URL / _CLIENT_ID / _CLIENT_SECRET  # all three, or none
 
 The introspection lane activates only when all three ``..._OAUTH_CLIENT_*``
 variables are set; a partial trio fails startup naming the missing field. There
@@ -315,11 +315,11 @@ class HybridTenantExtension(TenantExtension):
         # misconfiguration — a URL with no credentials, or credentials with no
         # endpoint. The error names the missing field and never echoes a value
         # (the client secret is one of the three).
-        self.oauth_client_url = config.get("oauth_client_url", "").strip()
+        self.oauth_base_url = config.get("oauth_base_url", "").strip()
         self.oauth_client_id = config.get("oauth_client_id", "").strip()
         self.oauth_client_secret = config.get("oauth_client_secret", "").strip()
         introspection_fields = {
-            "HINDSIGHT_API_TENANT_OAUTH_CLIENT_URL": self.oauth_client_url,
+            "HINDSIGHT_API_TENANT_OAUTH_BASE_URL": self.oauth_base_url,
             "HINDSIGHT_API_TENANT_OAUTH_CLIENT_ID": self.oauth_client_id,
             "HINDSIGHT_API_TENANT_OAUTH_CLIENT_SECRET": self.oauth_client_secret,
         }
@@ -504,8 +504,8 @@ class HybridTenantExtension(TenantExtension):
         # gets the same HTTPS-only rule as the issuer/JWKS above.
         if self.oauth_introspection_enabled:
             _require_secure_url(
-                self.oauth_client_url,
-                "HINDSIGHT_API_TENANT_OAUTH_CLIENT_URL",
+                self.oauth_base_url,
+                "HINDSIGHT_API_TENANT_OAUTH_BASE_URL",
             )
 
         # Lane B's cached JWKS keys, constructed unconditionally so authenticate()
@@ -650,7 +650,7 @@ class HybridTenantExtension(TenantExtension):
             logger.info("OAuth issuer: %s", self.oauth_issuer)
         if self.oauth_introspection_enabled:
             logger.info("Initializing hybrid tenant extension (token introspection lane enabled)")
-            logger.info("Introspection endpoint: %s", self.oauth_client_url)
+            logger.info("Introspection endpoint: %s", self.oauth_base_url)
         if self._http is None:
             self._http = httpx.AsyncClient(
                 timeout=httpx.Timeout(JWKS_TIMEOUT_SECONDS, connect=JWKS_TIMEOUT_SECONDS)
@@ -798,7 +798,7 @@ class HybridTenantExtension(TenantExtension):
             # Same timeout discipline as the JWKS fetch: a hung IdP fails the
             # request rather than pinning a worker on the first opaque token.
             response = await self._http.post(
-                self.oauth_client_url,
+                self.oauth_base_url,
                 data={"token": token},
                 auth=(self.oauth_client_id, self.oauth_client_secret),
             )

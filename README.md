@@ -43,7 +43,7 @@ All variables use the loader convention `HINDSIGHT_API_TENANT_<NAME>` →
 | `HINDSIGHT_API_TENANT_OAUTH_AUDIENCE` | no | — | Expected `aud` claim. Enforced only when set; unset disables the audience check. |
 | `HINDSIGHT_API_TENANT_OAUTH_JWKS_URL` | no | `{issuer}/jwks/` | JWKS endpoint. Must be `https` (`http` allowed only on loopback). |
 | `HINDSIGHT_API_TENANT_OAUTH_GROUPS_ALLOWLIST` | no | — | comma-separated authentik group names. When set, a token must carry at least one; otherwise rejected. |
-| `HINDSIGHT_API_TENANT_OAUTH_CLIENT_URL` | no | — | RFC 7662 introspection endpoint, e.g. `https://authentik.example/application/o/introspect/`. Must be `https` (`http` allowed only on loopback). |
+| `HINDSIGHT_API_TENANT_OAUTH_BASE_URL` | no | — | RFC 7662 introspection endpoint, e.g. `https://authentik.example/application/o/introspect/`. Must be `https` (`http` allowed only on loopback). |
 | `HINDSIGHT_API_TENANT_OAUTH_CLIENT_ID` | no | — | Introspection client id (HTTP Basic auth user). |
 | `HINDSIGHT_API_TENANT_OAUTH_CLIENT_SECRET` | no | — | Introspection client secret (HTTP Basic auth password). Inject from an Infisical-style env secret, never into the image. |
 
