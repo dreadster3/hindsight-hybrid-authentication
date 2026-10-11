@@ -1,0 +1,165 @@
+# CI for hindsight-hybrid-authentication.
+#
+# The whole suite is offline: ruff lint + ruff format --check + uv lock --check + pytest touch no
+# network and need no secrets — no HINDSIGHT_API_TENANT_USERS, no OIDC issuer, no database, no
+# repository secret, nothing. The 77 tests run entirely against the in-process stubs under
+# tests/_stub/, which is why every push and PR runs them with no skip logic, no matrix and no
+# conditional gating.
+#
+# One check per job: lint, fmt-check, lock-check and test are four separate jobs so they run in
+# parallel and each shows up as its own required-check name. They are deliberately NOT chained
+# with `needs:` — all four start at once.
+#
+# Each job is just the environment (pinned actions, cache, runner) around ONE Taskfile target:
+# `task lint`, `task fmt-check`, `task lock-check`, `task test`. The commands live in
+# Taskfile.yaml, so the local gate `task check` and these checks are the same commands by
+# construction rather than by discipline.
+#
+# All four jobs cache the uv cache directory via setup-uv's enable-cache. That cache is per-job,
+# so the concurrent jobs overlap on the same key namespace: expect a cold miss for each and
+# last-writer-wins churn on the first run of a ref. Wall-clock cost, not a correctness one.
+
+name: CI
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Superseded runs are pointless on a suite this fast: a new commit to the same ref cancels the
+# previous run instead of queueing behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The four check jobs intentionally omit `name:`, so each job id IS the check-run name
+  # (`lint`, `fmt-check`, ...) that branch protection points at. Only `docker-build` overrides it.
+  #
+  # Each check job repeats the same three-step setup trio. The pins and their rationale are
+  # spelled out once, on the `lint` job below; the other three point back at it.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      # v7, not v4 as originally sketched: actions/checkout@v4 declares `runs.using: node20`,
+      # and Node 20 was removed from GitHub Actions runners on 2026-09-23 with no opt-out, so
+      # @v4 no longer executes. v5+ are node24; v7 is current and still gets v4/v5/v6 backports.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned to the exact release rather than a floating major on purpose: upstream stopped
+      # publishing a floating major tag after v7 (the v7 tag is frozen at 7.6.0 from 2026-03,
+      # pre-dating v8's immutable-release/secure-tag hardening). v10.2.0 at time of writing;
+      # v10.3.0 landed 2026-10-09 and is not yet proven here, so the pin is unchanged — bump
+      # this line once a newer v10.x has been tried. This ref fixes the install/cache mechanics
+      # only, never the uv version CI runs: pyproject.toml declares no uv dependency and no
+      # `[tool.uv] required-version`, so setup-uv installs the latest uv release. Adding that
+      # block is the way to pin the resolved uv version if it is ever wanted.
+      # enable-cache is setup-uv's built-in GitHub Actions cache for the uv cache directory.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+
+      # The two candidates named for this were checked and do not exist: both
+      # ardalanamini/setup-go-task and dcarbone/install-task-action return 404 as of 2026-10.
+      # go-task/setup-task is the Task org's own action (maintained, node24, last release
+      # 2026-08). `version` is left at its `3.x` default, matching the Taskfile's `version: "3"`.
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+
+      # Ruff's own default rule set — see [tool.ruff] in pyproject.toml. No `--select` anywhere
+      # on purpose: the config is the one source of truth, so a local `task lint` and this job
+      # cannot disagree.
+      - name: task lint (ruff check)
+        run: task lint
+
+  fmt-check:
+    runs-on: ubuntu-latest
+    steps:
+      # Same setup trio as the `lint` job — see the pin rationale there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+
+      - name: task fmt-check (ruff format --check, non-mutating)
+        run: task fmt-check
+
+  lock-check:
+    runs-on: ubuntu-latest
+    steps:
+      # Same setup trio as the `lint` job — see the pin rationale there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+
+      # `uv lock --check` is non-mutating: it exits non-zero when uv.lock disagrees with
+      # pyproject.toml instead of quietly re-resolving. That matters here because the image
+      # build and the release both go through the lock, so a stale lock is a broken release.
+      - name: task lock-check (uv.lock matches pyproject.toml)
+        run: task lock-check
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Same setup trio as the `lint` job — see the pin rationale there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+
+      # `task test` depends on `install`, so this still runs `uv sync` before pytest — the sync
+      # carries the 5m cap, declared in the Taskfile next to the command rather than here.
+      - name: task test (full offline pytest suite)
+        run: task test
+
+  # Optional and non-required: builds deploy/Dockerfile so the image cannot silently rot. The
+  # container image is the deploy artifact, but the build is the slow, network-touching action
+  # here, so it is deliberately not one of the check jobs above.
+  #
+  # Build only, not a start-up probe: the base image is the Hindsight server and it wants a real
+  # tenant config (HINDSIGHT_API_TENANT_USERS, and Postgres for anything that authenticates), so
+  # probing /health would need throwaway credentials in CI for no coverage this suite lacks. The
+  # Dockerfile's own last step already imports the extension with the server's interpreter, which
+  # fails the build on a packaging mistake — that is the check worth having here.
+  #
+  # No `if:` — this job runs on every trigger: push(main), pull_request(main) and
+  # workflow_dispatch alike. The every-PR docker build is intentional — the image is the release
+  # artifact and must always build, so a Dockerfile that stopped building fails on the PR that
+  # broke it rather than after merge. It is a few minutes slower but deliberate. Honest per-PR
+  # cost: the whole build every run — no cross-run layer cache is configured here (no
+  # buildx/gha cache, this job runs plain `docker build`), so each PR pays the full Dockerfile
+  # plus its network fetches cold.
+  #
+  # Per-PR path filtering (deploy/** or src/**) is skipped for that same reason: always building
+  # is the requirement, not a thing to filter around, and a job-level path check would need an
+  # extra dependency (e.g. dorny/paths-filter) anyway. Promote it to a required check if the
+  # image becomes the real deploy path.
+  #
+  # No Taskfile target for this one, and no setup-task step: the build is the only thing here, and
+  # putting a `timeout`/tag convention in the Taskfile would add a second way to build the image
+  # that nothing else uses.
+  docker-build:
+    # `name` overrides the job id so the check-run reads as non-required in the PR's check list.
+    # Same command PR4 validated locally, and the same one release.yml pushes from.
+    name: docker-build (non-required)
+    runs-on: ubuntu-latest
+    steps:
+      # Shallow by default (fetch-depth 1, fetch-tags false), so no tags land in the checkout.
+      # That is fine here: the tag is the commit SHA, not a release tag — this job only proves
+      # the image builds.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Build from the repo root, not deploy/: the Dockerfile COPYs src/ into /app/extensions,
+      # and a narrower context would break that copy. Nothing is pushed, and no cache-to is
+      # configured — a cache namespace shared with the release push is not worth the risk of
+      # poisoning the image that actually ships.
+      - name: docker build
+        run: docker build -f deploy/Dockerfile -t hindsight-hybrid-auth:ci-${{ github.sha }} .

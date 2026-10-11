@@ -50,7 +50,12 @@ from urllib.parse import urlsplit
 
 import httpx
 import jwt as pyjwt
-from hindsight_api.extensions.tenant import AuthenticationError, Tenant, TenantContext, TenantExtension
+from hindsight_api.extensions.tenant import (
+    AuthenticationError,
+    Tenant,
+    TenantContext,
+    TenantExtension,
+)
 from hindsight_api.models import RequestContext
 from jwt import PyJWK
 
@@ -422,7 +427,10 @@ class HybridTenantExtension(TenantExtension):
                 )
 
             self._key_to_user[api_key] = _KeyEntry(
-                user_id=user_id, schema_name=schema_name, key_id=key_id, key_bytes=_encode_key(api_key)
+                user_id=user_id,
+                schema_name=schema_name,
+                key_id=key_id,
+                key_bytes=_encode_key(api_key),
             )
             self._users[user_id] = schema_name
 
@@ -696,7 +704,9 @@ class HybridTenantExtension(TenantExtension):
 
         user_id = claims.get("preferred_username") or claims.get("sub")
         if not user_id:
-            raise AuthenticationError("Token valid but missing both 'preferred_username' and 'sub' claims")
+            raise AuthenticationError(
+                "Token valid but missing both 'preferred_username' and 'sub' claims"
+            )
         user_id = str(user_id).lower()
         logger.debug("OAuth user resolved: iss=%s user_id=%s", claims.get("iss"), user_id)
         return user_id
@@ -757,4 +767,7 @@ class HybridTenantExtension(TenantExtension):
         tenants = dict(self._users)
         for user_id, schema_name in self._seen_users.items():
             tenants.setdefault(user_id, schema_name)
-        return [Tenant(schema=schema_name, tenant_id=user_id) for user_id, schema_name in tenants.items()]
+        return [
+            Tenant(schema=schema_name, tenant_id=user_id)
+            for user_id, schema_name in tenants.items()
+        ]

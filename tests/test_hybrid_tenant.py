@@ -7,7 +7,12 @@ import asyncio
 import hmac
 
 import pytest
-from hindsight_api.extensions.tenant import AuthenticationError, Tenant, TenantContext, TenantExtension
+from hindsight_api.extensions.tenant import (
+    AuthenticationError,
+    Tenant,
+    TenantContext,
+    TenantExtension,
+)
 from hindsight_api.models import RequestContext
 
 from hindsight_ext_hybrid_tenant import HybridTenantExtension
@@ -31,7 +36,9 @@ class FakeExtensionContext:
             raise RuntimeError("migration unavailable")
 
 
-def make_extension(config: dict[str, str] | None = None, ctx: FakeExtensionContext | None = None) -> HybridTenantExtension:
+def make_extension(
+    config: dict[str, str] | None = None, ctx: FakeExtensionContext | None = None
+) -> HybridTenantExtension:
     cfg = {"users": USERS}
     if config:
         cfg.update(config)
@@ -86,7 +93,9 @@ def test_schema_prefix_is_lowercased_to_match_postgres_folding():
     # query would miss.
     ext = make_extension({"schema_prefix": "MyUser"})
     assert ext.schema_prefix == "myuser"
-    assert asyncio.run(ext.authenticate(RequestContext(api_key=KEY_PI_A))).schema_name == "myuser_pi"
+    assert (
+        asyncio.run(ext.authenticate(RequestContext(api_key=KEY_PI_A))).schema_name == "myuser_pi"
+    )
 
 
 def test_schema_prefix_is_validated_after_lowercasing():
@@ -144,7 +153,9 @@ def test_oauth_issuer_must_be_https_except_loopback():
         with pytest.raises(ValueError, match="must be an https URL"):
             HybridTenantExtension({"users": USERS, "oauth_enabled": "true", "oauth_issuer": bad})
     # Loopback is exempt: there is no network segment to intercept in a sidecar.
-    ext = make_extension({"oauth_enabled": "true", "oauth_issuer": "http://127.0.0.1:9000/o/hindsight"})
+    ext = make_extension(
+        {"oauth_enabled": "true", "oauth_issuer": "http://127.0.0.1:9000/o/hindsight"}
+    )
     assert ext.oauth_enabled is True
 
 
@@ -232,7 +243,10 @@ def test_schema_name_longer_than_postgres_identifier_limit_is_rejected():
 
 def test_user_ids_are_normalized_to_lowercase_and_underscores():
     ext = make_extension({"users": f"Pi-Agent:{KEY_PI_A}"})
-    assert asyncio.run(ext.authenticate(RequestContext(api_key=KEY_PI_A))).schema_name == "user_pi_agent"
+    assert (
+        asyncio.run(ext.authenticate(RequestContext(api_key=KEY_PI_A))).schema_name
+        == "user_pi_agent"
+    )
     tenants = asyncio.run(ext.list_tenants())
     # tenant_id keeps the (lowercased) declared id; only the schema replaces dashes.
     assert [(t.schema, t.tenant_id) for t in tenants] == [("user_pi_agent", "pi-agent")]
@@ -246,7 +260,9 @@ def test_case_variants_merge_onto_one_user_and_schema():
 
 def test_custom_schema_prefix_applies():
     ext = make_extension({"schema_prefix": "tenant"})
-    assert asyncio.run(ext.authenticate(RequestContext(api_key=KEY_PI_A))).schema_name == "tenant_pi"
+    assert (
+        asyncio.run(ext.authenticate(RequestContext(api_key=KEY_PI_A))).schema_name == "tenant_pi"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +405,10 @@ def test_migration_failure_surfaces_as_authentication_error():
 def test_list_tenants_covers_every_configured_user():
     tenants = asyncio.run(make_extension().list_tenants())
     assert isinstance(tenants[0], Tenant)
-    assert {(t.schema, t.tenant_id) for t in tenants} == {("user_pi", "pi"), ("user_openwebui", "openwebui")}
+    assert {(t.schema, t.tenant_id) for t in tenants} == {
+        ("user_pi", "pi"),
+        ("user_openwebui", "openwebui"),
+    }
 
 
 def test_list_tenants_is_a_union_of_static_and_seen_users():
@@ -397,7 +416,9 @@ def test_list_tenants_is_a_union_of_static_and_seen_users():
     # An IdP-authenticated user (the stacked OAuth lane) is never in config; the
     # worker must still discover its schema or its consolidation stalls.
     ext._seen_users["oidc-user"] = "user_oidc_user"
-    assert ("user_oidc_user", "oidc-user") in {(t.schema, t.tenant_id) for t in asyncio.run(ext.list_tenants())}
+    assert ("user_oidc_user", "oidc-user") in {
+        (t.schema, t.tenant_id) for t in asyncio.run(ext.list_tenants())
+    }
 
 
 def test_authentication_marks_the_user_as_seen():
