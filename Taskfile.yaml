@@ -1,0 +1,61 @@
+version: "3"
+
+# One-command CI actions.
+#
+# go-task has no `.PHONY`: a task always runs unless it declares `sources`/`generates`/`status`.
+# Nothing here declares them — every task is a gate, and a cache-skipped gate is a lie.
+#
+# Runner: `task <name>` if go-task is installed, else `uvx --from go-task-bin task <name>`
+# (`uvx` works anywhere uv exists — note go-task is published as `go-task-bin`, not `go-task`).
+#
+# These targets are what CI calls: each check job in .github/workflows/ci.yml runs exactly one of
+# them, so a local `task check` and the PR's checks cannot drift apart. The CI job is the
+# environment (pinned actions, cache, runner) and the task is the command.
+#
+# `check` is the local gate and stays fast and network-free. The docker build has no target here:
+# it is the one slow, network-touching action, and CI owns it.
+
+tasks:
+  default:
+    aliases:
+      - help
+    cmd: task -l
+    silent: true
+
+  install:
+    desc: Sync the project environment including dev dependencies
+    cmds:
+      # The one network step. Five minutes is generous for a cached resolve, and a stalled
+      # download should fail the run rather than sit there burning a runner.
+      - cmd: uv sync
+        timeout: 5m
+
+  lint:
+    desc: ruff check
+    cmds:
+      - uv run ruff check .
+
+  fmt-check:
+    desc: ruff format --check — CI mode, non-mutating
+    cmds:
+      - uv run ruff format --check .
+
+  lock-check:
+    desc: Verify uv.lock matches pyproject.toml
+    cmds:
+      - uv lock --check
+
+  test:
+    desc: pytest — the full offline suite, after syncing the environment
+    deps:
+      - install
+    cmds:
+      - uv run pytest
+
+  check:
+    desc: CI gate — lint + fmt-check + lock-check + test (no docker)
+    cmds:
+      - task: lint
+      - task: fmt-check
+      - task: lock-check
+      - task: test
