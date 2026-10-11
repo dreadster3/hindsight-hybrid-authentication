@@ -8,15 +8,11 @@ first access. Isolation therefore sits below the bank mechanism: a client
 cannot reach another user's banks by guessing a bank id, because the schema is
 the boundary.
 
-This build implements the core, static-key lane only. It is deliberately
-explicit about the parts that are not here yet:
-
-    - ``HINDSIGHT_API_TENANT_USERS`` parsing with fail-fast startup validation
-    - constant-time static key match (``hmac.compare_digest``, no early fast path)
-    - JWT-shaped tokens are rejected with "Unknown credential" instead of being
-      matched as keys (the JWKS lane is a stacked PR), and
-      ``HINDSIGHT_API_TENANT_OAUTH_ENABLED=true`` is refused at startup so the
-      gap can never be silently misread as "OAuth is on"
+Two lanes share one resolver. Lane A matches env-declared static API keys in
+constant time; lane B verifies OAuth2/OIDC (authentik) bearer tokens locally
+against a cached JWKS. Lane routing is by credential shape: a static key never
+contains ".", a JWT always has two. A credential that fails its lane is
+refused — there is no fallback to the other lane or to unauthenticated.
 
 Configuration via environment variables, following the loader convention
 (``HINDSIGHT_API_TENANT_<NAME>`` -> ``config["<name>"]``)::
@@ -25,18 +21,17 @@ Configuration via environment variables, following the loader convention
     HINDSIGHT_API_TENANT_USERS=user1:key1,user1:key2,user2:key3   # required, comma-separated user:key pairs
     HINDSIGHT_API_TENANT_SCHEMA_PREFIX=user                      # optional, default "user"
     HINDSIGHT_API_TENANT_OAUTH_ENABLED=false                     # optional, default false
-    HINDSIGHT_API_TENANT_OAUTH_ISSUER / _AUDIENCE / _JWKS_URL / _GROUPS_ALLOWLIST
+    HINDSIGHT_API_TENANT_OAUTH_ISSUER=...                        # required when OAuth is enabled (https)
+    HINDSIGHT_API_TENANT_OAUTH_AUDIENCE / _JWKS_URL / _GROUPS_ALLOWLIST  # optional
 
-Planned but deliberately not implemented here: ``on_startup`` (plan §3) is not
-overridden. Every configuration check lives in ``__init__``, which the loader
-runs *before* startup and turns into a hard load failure — strictly earlier and
-stricter than an ``on_startup`` check — and the only work ``on_startup`` would
-do in this build (warming the JWKS cache) is moot while
-``oauth_enabled=true`` is refused. An override arrives with the lane that
-needs one.
+Configuration is validated in ``__init__`` (the loader turns a failure into a
+hard load failure); when OAuth is enabled, ``on_startup`` warms the JWKS cache
+and fails startup if the issuer is unreachable — an unverifiable token is never
+accepted, so a misconfigured lane fails loudly rather than degrading.
 
 Provenance: the static-key lane is ported from
-``hindsight-extensions/static-keys-tenant`` (vectorize-io/hindsight @
+``hindsight-extensions/static-keys-tenant``; the JWKS fetch/cache/kid-refresh
+pattern from ``hindsight-extensions/supabase-tenant`` (vectorize-io/hindsight @
 a9eeed77f9bce99d8f97d39a30d3281747300824, MIT).
 """
 
@@ -45,25 +40,36 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import re
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
+import httpx
+import jwt as pyjwt
 from hindsight_api.extensions.tenant import AuthenticationError, Tenant, TenantContext, TenantExtension
 from hindsight_api.models import RequestContext
+from jwt import PyJWK
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["HybridTenantExtension"]
 
-# Schema prefix must be a valid Postgres identifier component (letters, digits, underscores)
-_SCHEMA_PREFIX_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+# Schema prefix must be a valid Postgres identifier component (letters, digits, underscores).
+# \Z rather than $: $ also matches just before a trailing "\n", so an
+# operator-supplied "user\n" would pass validation and produce a schema name
+# Postgres would treat as a different identifier.
+_SCHEMA_PREFIX_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
 # User IDs appear in schema names, so they must be safe as a Postgres identifier
 # component: start with a letter/underscore, then letters/digits/underscore/dash.
 # Dashes are normalized to underscores and the whole id is lowercased before
 # building the schema name (Postgres folds unquoted identifiers to lowercase).
-_USER_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+# \Z, not $, so a signed claim ending in "\n" cannot slip through as "x\n".
+_USER_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\Z")
 
 # PostgreSQL truncates identifiers to NAMEDATALEN (63) bytes. An operator can
 # configure two distinct user ids that differ only past that boundary; both
@@ -80,6 +86,28 @@ _MIN_KEY_LENGTH = 16
 # the feature it names.
 _TRUE_VALUES = ("true", "1", "yes", "on")
 _FALSE_VALUES = ("", "false", "0", "no", "off")
+
+# OAuth/JWKS lane. RS256 is the only asymmetric algorithm authentik is
+# configured to sign with; restricting decode to it also blocks an "alg"
+# downgrade to a symmetric key. The 10 s leeway absorbs normal clock skew
+# between the issuer and this pod (PyJWT's default is zero).
+JWT_ALGORITHM = "RS256"
+JWT_LEEWAY_SECONDS = 10
+JWKS_CACHE_TTL_SECONDS = 600
+JWKS_TIMEOUT_SECONDS = 10.0
+MAX_JWKS_BYTES = 64 * 1024
+
+# Minimum age of the JWKS cache before a kid miss may force a refresh. A token
+# flood carrying garbage kids would otherwise trigger one upstream fetch per
+# request; a key rotated within this window is picked up by the TTL refresh.
+JWKS_MIN_REFRESH_INTERVAL_SECONDS = 30
+
+# Shortest credential accepted for the JWT lane (JWTs are typically 100+ chars).
+MIN_TOKEN_LENGTH = 20
+
+# A plaintext-HTTP issuer is only tolerated on loopback, where there is no
+# network segment to intercept (dev sidecar / local tests).
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def _derive_key_id(api_key: str) -> str:
@@ -118,6 +146,29 @@ def _parse_csv(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _monotonic() -> float:
+    """Monotonic clock, indirected so tests can drive JWKS cache expiry."""
+    return time.monotonic()
+
+
+def _require_secure_url(url: str, config_name: str) -> None:
+    """Reject a non-HTTPS OAuth URL unless it points at loopback.
+
+    A plaintext issuer cannot be trusted to sign the tokens this extension
+    accepts; loopback is exempt because a sidecar/dev issuer has no network
+    path to intercept.
+    """
+    parts = urlsplit(url)
+    if parts.scheme == "https":
+        return
+    if parts.scheme == "http" and (parts.hostname or "") in _LOOPBACK_HOSTS:
+        return
+    raise ValueError(
+        f"{config_name} must be an https URL (got scheme '{parts.scheme or '<none>'}'): "
+        "a non-HTTPS issuer cannot be trusted to sign tokens."
+    )
+
+
 @dataclass(frozen=True)
 class _KeyEntry:
     """A configured API key's mapping: the owning user and its isolated schema."""
@@ -129,6 +180,70 @@ class _KeyEntry:
     # once at init so authenticate() never re-encodes every configured key on
     # every request.
     key_bytes: bytes
+
+
+class _JwksCache:
+    """Cached JWKS public keys, keyed by ``kid``.
+
+    ``warm`` replaces the cache wholesale. ``signing_key`` refetches when the
+    cache is older than ``ttl`` — matching the 10-minute cache the issuer
+    itself serves, so rotation is picked up — and refreshes once on a ``kid``
+    miss (the key may have rotated since the last fetch) before giving up. A
+    second miss is an authentication failure, not a reason to trust the token.
+    """
+
+    def __init__(
+        self,
+        fetch: Callable[[], Awaitable[dict[str, PyJWK]]],
+        *,
+        ttl: float = JWKS_CACHE_TTL_SECONDS,
+    ) -> None:
+        self._fetch = fetch
+        self._ttl = ttl
+        self._keys: dict[str, PyJWK] = {}
+        self._fetched_at = 0.0
+
+    async def warm(self) -> dict[str, PyJWK]:
+        """Fetch keys, replacing the cache. Propagates fetch failures."""
+        keys = await self._fetch()
+        self._keys = keys
+        self._fetched_at = _monotonic()
+        return keys
+
+    async def signing_key(self, kid: str) -> PyJWK:
+        """Return the key for ``kid``, refreshing as needed.
+
+        A fetch failure here becomes ``AuthenticationError``: a 401 the client
+        can retry, never a 500 leaking the upstream error.
+        """
+        try:
+            # An empty key set also refetches here, bypassing the TTL: with no
+            # keys nothing can authenticate, so trade a burst of fetches during
+            # an issuer outage for fast recovery once keys reappear, rather than
+            # serving the outage for a full TTL.
+            if not self._keys or _monotonic() - self._fetched_at > self._ttl:
+                await self.warm()
+        except Exception as e:
+            raise AuthenticationError("Unable to fetch identity provider signing keys") from e
+
+        if kid in self._keys:
+            return self._keys[kid]
+
+        # kid miss — the issuer may have rotated keys since the last fetch, so
+        # refresh once and retry. Only when the cache is not already fresh: a
+        # token flood bearing garbage kids must not hammer the issuer's JWKS
+        # endpoint, and a just-fetched JWKS cannot contain the key either.
+        if _monotonic() - self._fetched_at < JWKS_MIN_REFRESH_INTERVAL_SECONDS:
+            raise AuthenticationError("Unable to find signing key for token")
+        logger.debug("Signing key %s not cached, refreshing JWKS for possible rotation", kid)
+        try:
+            await self.warm()
+        except Exception as e:
+            raise AuthenticationError("Unable to fetch identity provider signing keys") from e
+        if kid in self._keys:
+            return self._keys[kid]
+
+        raise AuthenticationError("Unable to find signing key for token")
 
 
 class HybridTenantExtension(TenantExtension):
@@ -331,14 +446,26 @@ class HybridTenantExtension(TenantExtension):
         # has ever been used.
         self._seen_users: dict[str, str] = {}
 
-        # The OAuth lane is a stacked PR. Refuse to start with it enabled rather
-        # than silently running static-only and leaving machine clients to fail
-        # with a 401 they cannot diagnose from the deployment's config.
+        # OAuth lane startup validation. Configuration is checked here so a
+        # misconfigured lane fails the load, not the first request; reachability
+        # is checked in on_startup, where a network call is allowed.
         if self.oauth_enabled:
-            raise ValueError(
-                "HINDSIGHT_API_TENANT_OAUTH_ENABLED=true is not supported by this build: the OAuth/JWT "
-                "lane is not implemented yet. Unset it (or set it to false) to run the static-key lane."
-            )
+            if not self.oauth_issuer:
+                raise ValueError(
+                    "HINDSIGHT_API_TENANT_OAUTH_ISSUER is required when HINDSIGHT_API_TENANT_OAUTH_ENABLED=true. "
+                    "Set it to your OIDC issuer URL (e.g. https://authentik.example/application/o/hindsight-mcp)."
+                )
+            _require_secure_url(self.oauth_issuer, "HINDSIGHT_API_TENANT_OAUTH_ISSUER")
+            _require_secure_url(self.oauth_jwks_url, "HINDSIGHT_API_TENANT_OAUTH_JWKS_URL")
+
+        # Lane B's cached JWKS keys, constructed unconditionally so authenticate()
+        # has no lazy-init branch to race on. Lane A never touches it.
+        self._jwks = _JwksCache(self._fetch_jwks)
+
+        # Reusable HTTP client for JWKS fetches, created in on_startup. Startup,
+        # shutdown and every authenticate() run on the server's event loop, which
+        # the client binds to.
+        self._http: httpx.AsyncClient | None = None
 
     # ------------------------------------------------------------------
     # Authentication
@@ -379,24 +506,42 @@ class HybridTenantExtension(TenantExtension):
         if not key:
             raise AuthenticationError("Missing Authorization header. Expected: Bearer <api_key>")
 
+        # Lane routing is by credential shape, not by config. Static keys are
+        # rejected at startup if they contain ".", so a JWT-shaped token cannot
+        # be a configured key. Neither lane falls back to the other, nor to
+        # unauthenticated: a credential that fails its lane is a 401.
         entry = self._match_static_key(key)
-        if entry is None:
-            if _is_jwt_shaped(key):
+        if entry is not None:
+            user_id, schema_name, key_id = entry.user_id, entry.schema_name, entry.key_id
+        elif _is_jwt_shaped(key):
+            if not self.oauth_enabled:
                 raise AuthenticationError("Unknown credential")
+            user_id = await self._verify_oauth_token(key)
+            schema_name = self._schema_name_for(user_id)
+            # The claim is attacker-controlled until the signature verifies, and
+            # even then it must not name a schema outside the tenant namespace
+            # (invalid identifier character) or one Postgres would truncate into
+            # a neighbour's. Same rules lane A enforces at startup.
+            if not _SCHEMA_PREFIX_RE.match(schema_name) or len(schema_name) > _MAX_SCHEMA_LENGTH:
+                raise AuthenticationError("Token subject cannot be mapped to a valid tenant schema")
+            key_id = None
+        else:
             raise AuthenticationError("Invalid API key")
 
-        await self._ensure_schema(entry.schema_name)
+        await self._ensure_schema(schema_name)
 
         # Usage metering: the HTTP/MCP layers read these fields back after auth
         # to attribute operations to a tenant / API key. api_key_id identifies
         # *the key* (see RequestContext), not the user — with multiple keys per
         # user it must distinguish which key authenticated. It is the derived,
-        # non-secret key_id, never the key itself.
-        context.tenant_id = entry.user_id
-        context.api_key_id = entry.key_id
-        self._seen_users.setdefault(entry.user_id, entry.schema_name)
+        # non-secret key_id, never the key itself. OAuth credentials are not
+        # static keys, so they leave api_key_id unset.
+        context.tenant_id = user_id
+        if key_id is not None:
+            context.api_key_id = key_id
+        self._seen_users.setdefault(user_id, schema_name)
 
-        return TenantContext(schema_name=entry.schema_name)
+        return TenantContext(schema_name=schema_name)
 
     def _match_static_key(self, key: str) -> _KeyEntry | None:
         """Return the entry whose configured key matches ``key``, or None.
@@ -418,6 +563,143 @@ class HybridTenantExtension(TenantExtension):
             if hmac.compare_digest(key_bytes, entry.key_bytes):
                 return entry
         return None
+
+    # ------------------------------------------------------------------
+    # OAuth / JWKS lane
+    # ------------------------------------------------------------------
+
+    async def on_startup(self) -> None:
+        """Warm the JWKS cache and fail startup if the OAuth lane is unusable.
+
+        With OAuth disabled this is a no-op (static keys need no network); with
+        it enabled the issuer must be reachable *now*. An extension that starts
+        without keys would either accept tokens it cannot verify or reject every
+        one — both are worse than failing the deploy.
+        """
+        if not self.oauth_enabled:
+            return
+        logger.info("Initializing hybrid tenant extension (OAuth lane enabled)")
+        logger.info("OAuth issuer: %s", self.oauth_issuer)
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                timeout=httpx.Timeout(JWKS_TIMEOUT_SECONDS, connect=JWKS_TIMEOUT_SECONDS)
+            )
+        try:
+            keys = await self._jwks.warm()
+        except Exception as e:
+            await self._http.aclose()
+            self._http = None
+            # The URL is config, not secret, and the transport error never
+            # carries the JWKS body or any token.
+            raise RuntimeError(
+                f"OAuth is enabled but the JWKS endpoint {self.oauth_jwks_url} is unreachable: {e!s}"
+            ) from e
+        logger.info("JWKS loaded with %d key(s)", len(keys))
+
+    async def on_shutdown(self) -> None:
+        """Close the JWKS HTTP client, if one was created."""
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
+
+    async def _fetch_jwks(self) -> dict[str, PyJWK]:
+        """Fetch and parse the issuer's JWKS document into ``kid`` -> PyJWK.
+
+        Streams the response so a broken or hostile endpoint cannot exhaust
+        memory with an oversized body. Raises on transport/HTTP/JSON failure;
+        callers decide whether that fails startup or a single authentication.
+        """
+        if self._http is None:
+            raise RuntimeError("HTTP client not initialized")
+        async with self._http.stream("GET", self.oauth_jwks_url) as response:
+            response.raise_for_status()
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > MAX_JWKS_BYTES:
+                    raise ValueError(f"JWKS document exceeds {MAX_JWKS_BYTES} bytes")
+        data = json.loads(bytes(body))
+        if not isinstance(data, dict):
+            raise ValueError("JWKS endpoint did not return a JSON object")
+        keys: dict[str, PyJWK] = {}
+        for key_data in data.get("keys", []):
+            kid = key_data.get("kid")
+            if not kid:
+                continue
+            try:
+                keys[kid] = PyJWK(key_data)
+            except pyjwt.PyJWKError:
+                logger.debug("Skipping unparsable JWKS key: kid=%s", kid)
+        return keys
+
+    async def _verify_oauth_token(self, token: str) -> str:
+        """Verify an OAuth2/OIDC bearer token and return its user id.
+
+        RS256 only — restricting ``algorithms`` at decode blocks an ``alg``
+        downgrade to a symmetric key. ``iss`` must equal the configured issuer;
+        ``aud`` is enforced only when configured. PyJWT's own exp/nbf/iat checks
+        run with a small clock-skew leeway. Never logs or echoes the token.
+        """
+        if len(token) < MIN_TOKEN_LENGTH:
+            raise AuthenticationError("Invalid token format")
+        if self._http is None:
+            raise AuthenticationError("OAuth lane is not initialized")
+
+        try:
+            header = pyjwt.get_unverified_header(token)
+        except pyjwt.InvalidTokenError as e:
+            raise AuthenticationError("Invalid token") from e
+        kid = header.get("kid")
+        if not kid:
+            raise AuthenticationError("Token missing key ID (kid) header")
+
+        signing_key = await self._jwks.signing_key(kid)
+        # PyJWT raises InvalidAudienceError for an aud-bearing token when no
+        # audience was passed, so "aud not configured" must disable the check
+        # explicitly rather than rely on audience=None.
+        decode_kwargs: dict = {"issuer": self.oauth_issuer, "leeway": JWT_LEEWAY_SECONDS}
+        if self.oauth_audience:
+            decode_kwargs["audience"] = self.oauth_audience
+        else:
+            decode_kwargs["options"] = {"verify_aud": False}
+        try:
+            claims = pyjwt.decode(
+                token,
+                signing_key.key,
+                algorithms=[JWT_ALGORITHM],
+                **decode_kwargs,
+            )
+        except pyjwt.ExpiredSignatureError as e:
+            raise AuthenticationError("Token has expired") from e
+        except pyjwt.ImmatureSignatureError as e:
+            raise AuthenticationError("Token is not yet valid") from e
+        except pyjwt.InvalidIssuerError as e:
+            raise AuthenticationError("Invalid token issuer") from e
+        except pyjwt.InvalidAudienceError as e:
+            raise AuthenticationError("Invalid token audience") from e
+        except pyjwt.InvalidAlgorithmError as e:
+            raise AuthenticationError("Unsupported token signing algorithm") from e
+        except pyjwt.InvalidSignatureError as e:
+            raise AuthenticationError("Invalid token signature") from e
+        except pyjwt.InvalidTokenError as e:
+            raise AuthenticationError("Invalid token") from e
+
+        # kid/iss/derived id only — never the token or its other claims.
+        logger.debug("OAuth token verified: kid=%s iss=%s", kid, claims.get("iss"))
+
+        if self.oauth_groups_allowlist:
+            groups = claims.get("groups") or []
+            if isinstance(groups, str):
+                groups = [groups]
+            if not set(groups) & set(self.oauth_groups_allowlist):
+                raise AuthenticationError("Token is not a member of an allowed group")
+
+        user_id = claims.get("preferred_username") or claims.get("sub")
+        if not user_id:
+            raise AuthenticationError("Token valid but missing both 'preferred_username' and 'sub' claims")
+        user_id = str(user_id).lower()
+        logger.debug("OAuth user resolved: iss=%s user_id=%s", claims.get("iss"), user_id)
+        return user_id
 
     # ------------------------------------------------------------------
     # Schema management
