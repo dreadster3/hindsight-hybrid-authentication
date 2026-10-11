@@ -1,0 +1,17 @@
+[project]
+name = "hindsight-hybrid-authentication"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "dreadster3", email = "afonso.antunes@live.com.pt" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+hindsight-hybrid-authentication = "hindsight_hybrid_authentication:main"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"
