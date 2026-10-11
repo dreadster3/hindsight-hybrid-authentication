@@ -86,14 +86,15 @@ Misconfiguration raises during load, not on the first request.
 
 ### Token introspection mode
 
-Set all three `..._OAUTH_CLIENT_*` variables to hand hindsight a single
-authentik client id/secret and have it validate opaque bearer tokens itself via
-RFC 7662. For any token that is neither a configured static key nor JWT-shaped,
-the extension POSTs `token=<token>` form-encoded to the introspection endpoint
-with HTTP Basic auth (client id/secret) and accepts only a response whose
-`active` is `true`. The user id comes from `preferred_username` or `sub`, `exp`
-is enforced when present (same 10 s leeway), and the groups allowlist applies —
-identical semantics to the JWKS lane.
+Set the three `..._OAUTH_BASE_URL / _CLIENT_ID / _CLIENT_SECRET` variables to
+hand hindsight a single authentik client id/secret and have it validate opaque
+bearer tokens itself via RFC 7662. For any token that is neither a configured
+static key nor JWT-shaped, the extension POSTs `token=<token>` form-encoded to
+the introspection endpoint with HTTP Basic auth (client id/secret) and accepts
+only a response whose `active` is `true`. The user id comes from
+`preferred_username` or `sub`, `exp` is enforced when present (same 10 s
+leeway), and the groups allowlist applies — identical semantics to the JWKS
+lane.
 
 Prefer this over local JWKS when clients hold **opaque** tokens (nothing local
 to verify) or when you need **authentik-side session revocation** to take effect

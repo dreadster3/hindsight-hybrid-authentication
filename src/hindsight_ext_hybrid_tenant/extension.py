@@ -28,9 +28,10 @@ Configuration via environment variables, following the loader convention
     HINDSIGHT_API_TENANT_OAUTH_AUDIENCE / _JWKS_URL / _GROUPS_ALLOWLIST  # optional
     HINDSIGHT_API_TENANT_OAUTH_BASE_URL / _CLIENT_ID / _CLIENT_SECRET  # all three, or none
 
-The introspection lane activates only when all three ``..._OAUTH_CLIENT_*``
-variables are set; a partial trio fails startup naming the missing field. There
-is no separate enable flag.
+The introspection lane activates only when all three
+``..._OAUTH_BASE_URL / _CLIENT_ID / _CLIENT_SECRET`` variables are set; a
+partial trio fails startup naming the missing field. There is no separate
+enable flag.
 
 Configuration is validated in ``__init__`` (the loader turns a failure into a
 hard load failure); when OAuth is enabled, ``on_startup`` warms the JWKS cache
