@@ -1,7 +1,7 @@
 [project]
-name = "hindsight-hybrid-authentication"
+name = "hindsight-ext-hybrid-tenant"
 version = "0.1.0"
-description = "Add your description here"
+description = "Hybrid Hindsight TenantExtension: static API keys (OAuth2/OIDC lane in a stacked PR), each mapping to an isolated per-user PostgreSQL schema."
 readme = "README.md"
 authors = [
     { name = "dreadster3", email = "afonso.antunes@live.com.pt" }
@@ -9,9 +9,14 @@ authors = [
 requires-python = ">=3.13"
 dependencies = []
 
-[project.scripts]
-hindsight-hybrid-authentication = "hindsight_hybrid_authentication:main"
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.17,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "hindsight_ext_hybrid_tenant"
