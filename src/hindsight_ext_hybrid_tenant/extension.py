@@ -27,6 +27,14 @@ Configuration via environment variables, following the loader convention
     HINDSIGHT_API_TENANT_OAUTH_ENABLED=false                     # optional, default false
     HINDSIGHT_API_TENANT_OAUTH_ISSUER / _AUDIENCE / _JWKS_URL / _GROUPS_ALLOWLIST
 
+Planned but deliberately not implemented here: ``on_startup`` (plan §3) is not
+overridden. Every configuration check lives in ``__init__``, which the loader
+runs *before* startup and turns into a hard load failure — strictly earlier and
+stricter than an ``on_startup`` check — and the only work ``on_startup`` would
+do in this build (warming the JWKS cache) is moot while
+``oauth_enabled=true`` is refused. An override arrives with the lane that
+needs one.
+
 Provenance: the static-key lane is ported from
 ``hindsight-extensions/static-keys-tenant`` (vectorize-io/hindsight @
 a9eeed77f9bce99d8f97d39a30d3281747300824, MIT).
@@ -67,7 +75,11 @@ _MAX_SCHEMA_LENGTH = 63
 # per-user isolation boundary whose front door is a five-character secret.
 _MIN_KEY_LENGTH = 16
 
+# Truthy/falsy spellings accepted for boolean config values. Anything else is a
+# typo, and a typo in a security switch must fail startup, not silently disable
+# the feature it names.
 _TRUE_VALUES = ("true", "1", "yes", "on")
+_FALSE_VALUES = ("", "false", "0", "no", "off")
 
 
 def _derive_key_id(api_key: str) -> str:
@@ -150,7 +162,12 @@ class HybridTenantExtension(TenantExtension):
         """
         super().__init__(config)
 
-        self.schema_prefix = config.get("schema_prefix", "user")
+        # PostgreSQL folds unquoted identifiers to lowercase at query time,
+        # while the migration path creates the schema quoted. A mixed-case
+        # prefix like "My_user" would therefore be created as "My_user" and
+        # looked up as "my_user" — every query missing. Fold it once here, then
+        # validate the normalized form that will actually be used.
+        self.schema_prefix = config.get("schema_prefix", "user").lower()
 
         # OAuth lane config. Parsed and held now so the config surface is
         # complete, but the lane itself is not implemented in this build: see
@@ -162,7 +179,20 @@ class HybridTenantExtension(TenantExtension):
             # authentik publishes per-application JWKS at {issuer}/jwks/.
             self.oauth_jwks_url = f"{self.oauth_issuer.rstrip('/')}/jwks/"
         self.oauth_groups_allowlist = _parse_csv(config.get("oauth_groups_allowlist", ""))
-        self.oauth_enabled = config.get("oauth_enabled", "").lower() in _TRUE_VALUES
+        oauth_enabled_raw = config.get("oauth_enabled", "").strip().lower()
+        if oauth_enabled_raw in _TRUE_VALUES:
+            self.oauth_enabled = True
+        elif oauth_enabled_raw in _FALSE_VALUES:
+            self.oauth_enabled = False
+        else:
+            # The value is not echoed: an operator who pastes this error into a
+            # chat should not have to notice that they pasted a secret into the
+            # wrong variable.
+            raise ValueError(
+                "Invalid HINDSIGHT_API_TENANT_OAUTH_ENABLED value. Expected one of: "
+                + ", ".join(repr(v) if v else "''" for v in (*_TRUE_VALUES, *_FALSE_VALUES))
+                + "."
+            )
 
         if not _SCHEMA_PREFIX_RE.match(self.schema_prefix):
             raise ValueError(
@@ -209,8 +239,11 @@ class HybridTenantExtension(TenantExtension):
                     + " must be non-empty."
                 )
             if not _USER_ID_RE.match(user_id):
+                # Index only: an inverted pair ("SECRET:owner") puts key material
+                # in the user_id slot, and the operator pasting this error would
+                # be the one leaking it.
                 raise ValueError(
-                    f"Invalid user_id '{user_id}' in HINDSIGHT_API_TENANT_USERS. "
+                    f"Invalid user_id at index {index} in HINDSIGHT_API_TENANT_USERS. "
                     "Must start with a letter or underscore, then letters, digits, underscores or dashes."
                 )
 
