@@ -127,10 +127,25 @@ def test_explicit_oauth_jwks_url_wins():
     assert ext.oauth_jwks_url == url
 
 
-def test_enabling_the_unimplemented_oauth_lane_fails_startup():
+def test_oauth_enabled_requires_issuer():
+    # A security switch that turns on verification must not start without the
+    # thing to verify against. Error names the variable, not a pasted secret.
     for flag in ("true", "TRUE", "1", "yes", "on"):
-        with pytest.raises(ValueError, match="HINDSIGHT_API_TENANT_OAUTH_ENABLED"):
+        with pytest.raises(ValueError, match="HINDSIGHT_API_TENANT_OAUTH_ISSUER is required"):
             HybridTenantExtension({"users": USERS, "oauth_enabled": flag})
+
+
+def test_oauth_issuer_must_be_https_except_loopback():
+    for bad in (
+        "http://authentik.example/o/hindsight-mcp",
+        "authentik.example/o/hindsight-mcp",  # no scheme
+        "ftp://authentik.example/o/hindsight-mcp",
+    ):
+        with pytest.raises(ValueError, match="must be an https URL"):
+            HybridTenantExtension({"users": USERS, "oauth_enabled": "true", "oauth_issuer": bad})
+    # Loopback is exempt: there is no network segment to intercept in a sidecar.
+    ext = make_extension({"oauth_enabled": "true", "oauth_issuer": "http://127.0.0.1:9000/o/hindsight"})
+    assert ext.oauth_enabled is True
 
 
 def test_recognized_falsy_oauth_enabled_values_are_accepted():
