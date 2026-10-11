@@ -92,7 +92,9 @@ class JwksServer:
         if self.status != 200:
             return httpx.Response(self.status, text="jwks unavailable")
         if self.body is not None:
-            return httpx.Response(200, content=self.body, headers={"content-type": "application/json"})
+            return httpx.Response(
+                200, content=self.body, headers={"content-type": "application/json"}
+            )
         return httpx.Response(200, json={"keys": [k.jwk for k in self.keys]})
 
 
@@ -106,7 +108,9 @@ class FakeExtensionContext:
         self.migrations.append(schema_name)
 
 
-def make_extension(server: JwksServer, ctx: FakeExtensionContext | None = None, **overrides) -> HybridTenantExtension:
+def make_extension(
+    server: JwksServer, ctx: FakeExtensionContext | None = None, **overrides
+) -> HybridTenantExtension:
     """Build an OAuth-enabled extension wired to ``server`` via a mock transport."""
     config = {
         "users": USERS,
@@ -264,7 +268,9 @@ def test_small_clock_skew_within_leeway_is_accepted():
             await ext.on_startup()
             now = int(time.time())
             token = sign(KEY_A, nbf=now + 5, iat=now + 5)
-            assert (await ext.authenticate(RequestContext(api_key=token))).schema_name == "user_1234567890"
+            assert (
+                await ext.authenticate(RequestContext(api_key=token))
+            ).schema_name == "user_1234567890"
 
     run(_run)
 
@@ -313,7 +319,9 @@ def test_groups_allowlist_accepts_a_member():
         async with running(server, oauth_groups_allowlist="agents, admins") as ext:
             await ext.on_startup()
             token = sign(KEY_A, groups=["other", "agents"])
-            assert (await ext.authenticate(RequestContext(api_key=token))).schema_name == "user_1234567890"
+            assert (
+                await ext.authenticate(RequestContext(api_key=token))
+            ).schema_name == "user_1234567890"
 
     run(_run)
 
@@ -346,7 +354,9 @@ def test_no_groups_allowlist_skips_the_groups_check():
         server = JwksServer()
         async with running(server) as ext:
             await ext.on_startup()
-            assert (await ext.authenticate(RequestContext(api_key=sign(KEY_A, groups=[])))).schema_name
+            assert (
+                await ext.authenticate(RequestContext(api_key=sign(KEY_A, groups=[])))
+            ).schema_name
 
     run(_run)
 
@@ -502,7 +512,9 @@ def test_unknown_credential_still_gets_401():
                 await ext.authenticate(RequestContext(api_key="not-a-key-and-not-a-jwt"))
             # A JWT-shaped token that fails verification is a 401, never a fallback.
             with pytest.raises(AuthenticationError, match="signature"):
-                await ext.authenticate(RequestContext(api_key=sign(TestKey(kid=KEY_A.kid, private=FOREIGN.private))))
+                await ext.authenticate(
+                    RequestContext(api_key=sign(TestKey(kid=KEY_A.kid, private=FOREIGN.private)))
+                )
 
     run(_run)
 
@@ -522,8 +534,12 @@ def test_mcp_lane_returns_the_same_tenant_context_for_a_jwt():
         server = JwksServer()
         async with running(server) as ext:
             await ext.on_startup()
-            http = await ext.authenticate(RequestContext(api_key=sign(KEY_A, preferred_username="Pat")))
-            mcp = await ext.authenticate_mcp(RequestContext(api_key=sign(KEY_A, preferred_username="Pat")))
+            http = await ext.authenticate(
+                RequestContext(api_key=sign(KEY_A, preferred_username="Pat"))
+            )
+            mcp = await ext.authenticate_mcp(
+                RequestContext(api_key=sign(KEY_A, preferred_username="Pat"))
+            )
             assert http == mcp
             assert http.schema_name == "user_pat"
 
@@ -536,7 +552,9 @@ def test_oauth_user_is_recorded_for_worker_discovery():
         async with running(server) as ext:
             await ext.on_startup()
             await ext.authenticate(RequestContext(api_key=sign(KEY_A, preferred_username="Pat")))
-            assert ("user_pat", "pat") in {(t.schema, t.tenant_id) for t in await ext.list_tenants()}
+            assert ("user_pat", "pat") in {
+                (t.schema, t.tenant_id) for t in await ext.list_tenants()
+            }
 
     run(_run)
 

@@ -57,4 +57,6 @@ class BankScopedTable:
         if not _IDENTIFIER_RE.match(self.name):
             raise ValueError(f"BankScopedTable.name {self.name!r} is not a valid SQL identifier")
         if not _IDENTIFIER_RE.match(self.bank_id_column):
-            raise ValueError(f"BankScopedTable.bank_id_column {self.bank_id_column!r} is not a valid SQL identifier")
+            raise ValueError(
+                f"BankScopedTable.bank_id_column {self.bank_id_column!r} is not a valid SQL identifier"
+            )

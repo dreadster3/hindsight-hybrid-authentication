@@ -133,7 +133,9 @@ class TenantExtension(Extension, ABC):
         """
         return {}
 
-    async def get_allowed_config_fields(self, context: RequestContext, bank_id: str) -> set[str] | None:
+    async def get_allowed_config_fields(
+        self, context: RequestContext, bank_id: str
+    ) -> set[str] | None:
         """
         Get set of config fields that this tenant/bank is allowed to modify.
 
@@ -200,7 +202,7 @@ class TenantExtension(Extension, ABC):
 
         The default does nothing.
         """
-        return None
+        return
 
     async def authenticate_mcp(self, context: RequestContext) -> TenantContext:
         """

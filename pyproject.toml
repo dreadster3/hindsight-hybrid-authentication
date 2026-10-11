@@ -15,6 +15,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.17.0",
 ]
 
 [build-system]
@@ -23,3 +24,21 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "hindsight_ext_hybrid_tenant"
+
+# Boring on purpose: ruff's own default rule set plus `ruff format` as the single
+# formatter, so `ruff check` flags mistakes rather than style opinions. line-length
+# 100 is the one setting that matters here — the source wraps its prose docstrings
+# at 100 and 88 would reflow blocks that were written to read well.
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# Two rules are off, both because their fix would change behaviour rather than
+# formatting:
+#   TRY004 — the JWKS fetch path raises ValueError for a non-object payload on
+#     purpose; that type is caught and translated to AuthenticationError one call
+#     up, so switching it to TypeError would change what callers (and tests) see.
+#   BLE001 — the blind `except Exception` around the host-supplied
+#     `run_migration` is the point: any failure has to become AuthenticationError
+#     instead of escaping as a raw traceback mid-authentication.
+ignore = ["TRY004", "BLE001"]

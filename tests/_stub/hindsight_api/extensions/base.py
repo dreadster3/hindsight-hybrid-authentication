@@ -33,7 +33,7 @@ class Extension(ABC):
                     Keys are lowercased with the prefix stripped.
         """
         self.config = config
-        self._context: "ExtensionContext | None" = None
+        self._context: ExtensionContext | None = None
 
     def set_context(self, context: "ExtensionContext") -> None:
         """
@@ -119,7 +119,6 @@ class Extension(ABC):
 
         Override to perform initialization tasks like connecting to external services.
         """
-        pass
 
     async def on_shutdown(self) -> None:
         """
@@ -127,4 +126,3 @@ class Extension(ABC):
 
         Override to perform cleanup tasks like closing connections.
         """
-        pass
