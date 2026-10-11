@@ -43,9 +43,9 @@ All variables use the loader convention `HINDSIGHT_API_TENANT_<NAME>` →
 | `HINDSIGHT_API_TENANT_OAUTH_AUDIENCE` | no | — | Expected `aud` claim. Enforced only when set; unset disables the audience check. |
 | `HINDSIGHT_API_TENANT_OAUTH_JWKS_URL` | no | `{issuer}/jwks/` | JWKS endpoint. Must be `https` (`http` allowed only on loopback). |
 | `HINDSIGHT_API_TENANT_OAUTH_GROUPS_ALLOWLIST` | no | — | comma-separated authentik group names. When set, a token must carry at least one; otherwise rejected. |
-| `HINDSIGHT_API_TENANT_OAUTH_INTROSPECTION_URL` | no | — | RFC 7662 introspection endpoint, e.g. `https://authentik.example/application/o/introspect/`. Must be `https` (`http` allowed only on loopback). |
-| `HINDSIGHT_API_TENANT_OAUTH_INTROSPECTION_CLIENT_ID` | no | — | Introspection client id (HTTP Basic auth user). |
-| `HINDSIGHT_API_TENANT_OAUTH_INTROSPECTION_CLIENT_SECRET` | no | — | Introspection client secret (HTTP Basic auth password). Inject from an Infisical-style env secret, never into the image. |
+| `HINDSIGHT_API_TENANT_OAUTH_CLIENT_URL` | no | — | RFC 7662 introspection endpoint, e.g. `https://authentik.example/application/o/introspect/`. Must be `https` (`http` allowed only on loopback). |
+| `HINDSIGHT_API_TENANT_OAUTH_CLIENT_ID` | no | — | Introspection client id (HTTP Basic auth user). |
+| `HINDSIGHT_API_TENANT_OAUTH_CLIENT_SECRET` | no | — | Introspection client secret (HTTP Basic auth password). Inject from an Infisical-style env secret, never into the image. |
 
 The three introspection variables are all-or-nothing: **all three set** →
 opaque-token introspection is active; **a partial trio** fails startup, naming
@@ -86,7 +86,7 @@ Misconfiguration raises during load, not on the first request.
 
 ### Token introspection mode
 
-Set all three `..._OAUTH_INTROSPECTION_*` variables to hand hindsight a single
+Set all three `..._OAUTH_CLIENT_*` variables to hand hindsight a single
 authentik client id/secret and have it validate opaque bearer tokens itself via
 RFC 7662. For any token that is neither a configured static key nor JWT-shaped,
 the extension POSTs `token=<token>` form-encoded to the introspection endpoint

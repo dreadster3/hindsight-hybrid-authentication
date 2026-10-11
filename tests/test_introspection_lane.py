@@ -93,9 +93,9 @@ CONFIG = {
     "oauth_issuer": ISSUER,
     "oauth_jwks_url": JWKS_URL,
     "oauth_audience": AUDIENCE,
-    "oauth_introspection_url": INTROSPECT_URL,
-    "oauth_introspection_client_id": CLIENT_ID,
-    "oauth_introspection_client_secret": CLIENT_SECRET,
+    "oauth_client_url": INTROSPECT_URL,
+    "oauth_client_id": CLIENT_ID,
+    "oauth_client_secret": CLIENT_SECRET,
 }
 
 
@@ -152,16 +152,16 @@ def test_partial_trio_fails_startup_naming_the_missing_field(dropped):
 def test_partial_trio_never_echoes_the_supplied_secret():
     # URL and secret supplied, client id missing: the error must name the field,
     # never quote the secret that was supplied.
-    config = {k: v for k, v in CONFIG.items() if k != "oauth_introspection_client_id"}
+    config = {k: v for k, v in CONFIG.items() if k != "oauth_client_id"}
     with pytest.raises(ValueError) as excinfo:
         HybridTenantExtension(config)
-    assert "OAUTH_INTROSPECTION_CLIENT_ID" in str(excinfo.value)
+    assert "OAUTH_CLIENT_ID" in str(excinfo.value)
     assert CLIENT_SECRET not in str(excinfo.value)
 
 
 def test_introspection_endpoint_must_be_https():
-    config = dict(CONFIG, oauth_introspection_url="http://authentik.test/introspect/")
-    with pytest.raises(ValueError, match="INTROSPECTION_URL"):
+    config = dict(CONFIG, oauth_client_url="http://authentik.test/introspect/")
+    with pytest.raises(ValueError, match="CLIENT_URL"):
         HybridTenantExtension(config)
 
 
@@ -488,9 +488,9 @@ def test_opaque_token_without_introspection_configured_is_refused():
         authentik = FakeAuthentik()
         async with running(
             authentik,
-            oauth_introspection_url="",
-            oauth_introspection_client_id="",
-            oauth_introspection_client_secret="",
+            oauth_client_url="",
+            oauth_client_id="",
+            oauth_client_secret="",
         ) as ext:
             await ext.on_startup()
             with pytest.raises(AuthenticationError, match="Invalid API key"):
