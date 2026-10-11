@@ -36,8 +36,8 @@ All variables use the loader convention `HINDSIGHT_API_TENANT_<NAME>` →
 |---|---|---|---|
 | `HINDSIGHT_API_TENANT_EXTENSION` | yes | — | `hindsight_ext_hybrid_tenant:HybridTenantExtension` |
 | `HINDSIGHT_API_TENANT_USERS` | yes | — | comma-separated `user_id:api_key` pairs. Multiple keys may map to one user (`pi:K1,pi:K2,openwebui:K3`). |
-| `HINDSIGHT_API_TENANT_SCHEMA_PREFIX` | no | `user` | Postgres identifier component (`^[A-Za-z_][A-Za-z0-9_]*$`). Lowercased at load to match Postgres identifier folding. Schema = `{prefix}_{user_id}`. |
-| `HINDSIGHT_API_TENANT_OAUTH_ENABLED` | no | `false` | `true`/`1`/`yes`/`on` or `false`/`0`/`no`/`off`. Anything else fails startup. When false the extension behaves exactly like the static-keys lane. |
+| `HINDSIGHT_API_TENANT_SCHEMA_PREFIX` | no | `user` | Postgres identifier component (`^[A-Za-z_][A-Za-z0-9_]*\Z`). Lowercased at load to match Postgres identifier folding. Schema = `{prefix}_{user_id}`. |
+| `HINDSIGHT_API_TENANT_OAUTH_ENABLED` | no | `false` | `true`/`1`/`yes`/`on` or `false`/`0`/`no`/`off`, matched case-insensitively (value stripped + lowercased). Anything else fails startup. When false the extension behaves exactly like the static-keys lane. |
 | `HINDSIGHT_API_TENANT_OAUTH_ISSUER` | yes when OAuth enabled | — | OIDC issuer URL, e.g. `https://authentik.example/application/o/hindsight-mcp`. Must be `https` (`http` allowed only on loopback). |
 | `HINDSIGHT_API_TENANT_OAUTH_AUDIENCE` | no | — | Expected `aud` claim. Enforced only when set; unset disables the audience check. |
 | `HINDSIGHT_API_TENANT_OAUTH_JWKS_URL` | no | `{issuer}/jwks/` | JWKS endpoint. Must be `https` (`http` allowed only on loopback). |
@@ -48,7 +48,7 @@ All variables use the loader convention `HINDSIGHT_API_TENANT_<NAME>` →
 Misconfiguration raises during load, not on the first request.
 
 - `USERS` entries must be `user_id:api_key`; both sides non-empty.
-- `user_id`: `^[A-Za-z_][A-Za-z0-9_-]*$`, then lowercased, dashes → underscores.
+- `user_id`: `^[A-Za-z_][A-Za-z0-9_-]*\Z`, then lowercased, dashes → underscores.
 - `api_key`: ASCII, no `.` (would be routed as JWT-shaped), ≥ 16 chars.
 - Keys unique across users; schema names unique after normalization; schema
   names ≤ 63 bytes (Postgres `NAMEDATALEN`).
@@ -63,7 +63,8 @@ Misconfiguration raises during load, not on the first request.
   `exp`/`nbf`/`iat` checked by PyJWT with a 10 s clock-skew leeway.
 - JWKS cached 600 s; on a `kid` miss the cache is refreshed once and retried.
   A miss while the cache is < 30 s old fails without an upstream fetch, so a
-  flood of garbage-`kid` tokens cannot hammer the issuer.
+  flood of garbage-`kid` tokens cannot hammer the issuer (an *empty* key set
+  refetches on every request by design — nothing can authenticate anyway).
 - JWKS body capped at 64 KiB; fetch timeout 10 s.
 - User id = `preferred_username` or `sub` (lowercased); must map to a valid,
   non-truncating schema or the request is refused.
@@ -133,8 +134,9 @@ user; it never calls the IdP per request.
 
 `list_tenants()` returns the **union** of static users (known at startup) and
 users seen through authentication (OAuth users are minted by the IdP, not by
-config). The worker's background consolidation therefore keeps running over
-every schema that has ever been used — static and OAuth alike. A worker without
+config; seen re-enter the union on their next authentication after a restart —
+the set is in-memory). The worker's background consolidation therefore keeps
+running over every schema that has ever been used — static and OAuth alike. A worker without
 this extension would stop every tenant's processing; `list_tenants` is the
 seam that keeps it working.
 
@@ -175,9 +177,8 @@ Decide explicitly; do not leave data stranded silently.
 - Vendored pattern sources: the static-key lane is ported from
   `hindsight-extensions/static-keys-tenant`; the JWKS fetch/cache/kid-refresh
   pattern from `hindsight-extensions/supabase-tenant`.
-- Upstream: `vectorize-io/hindsight` (MIT). Extension examples cited as
-  `vectorize-io/hindsight@main`; the interface used here is pinned to commit
-  `a9eeead77f9bce99d8f97d39a30d3281747300824`.
+- Upstream: `vectorize-io/hindsight` (MIT). The interface used here is pinned
+  to commit `a9eeed77f9bce99d8f97d39a30d3281747300824`.
 - `hindsight_api` is **not** a dependency of this repo. A verbatim copy of the
   pinned interface lives under `tests/_stub/` for the test run only; at runtime
   the image supplies the real `hindsight_api`.
