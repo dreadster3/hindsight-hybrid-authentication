@@ -47,13 +47,15 @@ jobs:
       # @v4 no longer executes. v5+ are node24; v7 is current and still gets v4/v5/v6 backports.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Pinned to the exact current release rather than a floating major on purpose: upstream
-      # stopped publishing a floating major tag after v7 (the v7 tag is frozen at 7.6.0 from
-      # 2026-03, pre-dating v8's immutable-release/secure-tag hardening), and v10.2.0 is the
-      # latest release. Bump this line when a newer v10.x lands. The uv binary itself is
-      # resolved from the repository, so this ref only fixes the install/cache mechanics, never
-      # the uv version CI runs. enable-cache is setup-uv's built-in GitHub Actions cache for
-      # the uv cache directory.
+      # Pinned to the exact release rather than a floating major on purpose: upstream stopped
+      # publishing a floating major tag after v7 (the v7 tag is frozen at 7.6.0 from 2026-03,
+      # pre-dating v8's immutable-release/secure-tag hardening). v10.2.0 at time of writing;
+      # v10.3.0 landed 2026-10-09 and is not yet proven here, so the pin is unchanged — bump
+      # this line once a newer v10.x has been tried. This ref fixes the install/cache mechanics
+      # only, never the uv version CI runs: pyproject.toml declares no uv dependency and no
+      # `[tool.uv] required-version`, so setup-uv installs the latest uv release. Adding that
+      # block is the way to pin the resolved uv version if it is ever wanted.
+      # enable-cache is setup-uv's built-in GitHub Actions cache for the uv cache directory.
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
