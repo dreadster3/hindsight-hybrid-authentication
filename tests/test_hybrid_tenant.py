@@ -80,6 +80,21 @@ def test_schema_prefix_must_be_a_postgres_identifier():
             HybridTenantExtension({"users": USERS, "schema_prefix": bad})
 
 
+def test_schema_prefix_is_lowercased_to_match_postgres_folding():
+    # Migration creates the schema quoted, the request path folds unquoted
+    # identifiers, so a mixed-case prefix must be folded once at init or every
+    # query would miss.
+    ext = make_extension({"schema_prefix": "MyUser"})
+    assert ext.schema_prefix == "myuser"
+    assert asyncio.run(ext.authenticate(RequestContext(api_key=KEY_PI_A))).schema_name == "myuser_pi"
+
+
+def test_schema_prefix_is_validated_after_lowercasing():
+    # Case is folded, an invalid character is not: "My-Prefix" is "my-prefix".
+    with pytest.raises(ValueError, match="Invalid schema_prefix"):
+        HybridTenantExtension({"users": USERS, "schema_prefix": "My-Prefix"})
+
+
 def test_oauth_fields_parse_and_default_to_disabled():
     ext = make_extension()
     assert ext.oauth_enabled is False
@@ -118,6 +133,26 @@ def test_enabling_the_unimplemented_oauth_lane_fails_startup():
             HybridTenantExtension({"users": USERS, "oauth_enabled": flag})
 
 
+def test_recognized_falsy_oauth_enabled_values_are_accepted():
+    for flag in ("", "false", "FALSE", "0", "no", "off", " Off "):
+        assert make_extension({"oauth_enabled": flag}).oauth_enabled is False
+
+
+def test_unrecognized_oauth_enabled_value_fails_startup():
+    # A typo in a security switch must fail startup, not silently disable the
+    # feature it names (e.g. "tru", "enabled", "2").
+    for bad in ("TrUe2", " tru", "tru", "enabled", "2"):
+        with pytest.raises(ValueError, match="Invalid HINDSIGHT_API_TENANT_OAUTH_ENABLED"):
+            HybridTenantExtension({"users": USERS, "oauth_enabled": bad})
+
+
+def test_unrecognized_oauth_enabled_value_is_not_echoed():
+    secret = "sk-live-0123456789abcdef"
+    with pytest.raises(ValueError) as excinfo:
+        HybridTenantExtension({"users": USERS, "oauth_enabled": secret})
+    assert secret not in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # Startup validation of the users list
 # ---------------------------------------------------------------------------
@@ -146,6 +181,15 @@ def test_short_key_error_names_the_key_without_echoing_it():
     message = config_error(f"pi:{weak}")
     assert "key_id" in message and "at least 16" in message
     assert weak not in message
+
+
+def test_invalid_user_id_error_does_not_echo_the_entry():
+    # An inverted pair ("SECRET:owner") puts key material in the user_id slot;
+    # if it does not look like an id, the error must not quote it back.
+    secret = "sk-live/abcdef0123456789"
+    message = config_error(f"{secret}:owner-key-0123456789")
+    assert "Invalid user_id" in message and "index 0" in message
+    assert secret not in message
 
 
 def test_duplicate_key_across_users_is_rejected_without_echoing_it():
