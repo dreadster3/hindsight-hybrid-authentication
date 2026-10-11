@@ -1,8 +1,8 @@
-"""Hybrid tenant extension for Hindsight: static API keys now, OAuth2/OIDC next.
+"""Hybrid tenant extension for Hindsight: static API keys and OAuth2/OIDC bearer tokens.
 
 One ``TenantExtension`` accepts both credential shapes a deployment needs — the
-env-declared static API keys used by headless clients today, and OAuth2/OIDC
-bearer tokens (authentik) once the JWKS lane lands — and resolves either to a
+env-declared static API keys used by headless clients, and OAuth2/OIDC bearer
+tokens (authentik) verified locally against a cached JWKS — and resolves either to a
 **per-user PostgreSQL schema** (``{prefix}_{user_id}``), provisioned lazily on
 first access. Isolation therefore sits below the bank mechanism: a client
 cannot reach another user's banks by guessing a bank id, because the schema is
@@ -284,9 +284,9 @@ class HybridTenantExtension(TenantExtension):
         # validate the normalized form that will actually be used.
         self.schema_prefix = config.get("schema_prefix", "user").lower()
 
-        # OAuth lane config. Parsed and held now so the config surface is
-        # complete, but the lane itself is not implemented in this build: see
-        # the oauth_enabled guard at the end of __init__.
+        # OAuth lane config, parsed and validated here so a misconfigured lane
+        # fails the load rather than the first request; on_startup then warms
+        # the JWKS cache. See the oauth_enabled guard at the end of __init__.
         self.oauth_issuer = config.get("oauth_issuer", "")
         self.oauth_audience = config.get("oauth_audience", "")
         self.oauth_jwks_url = config.get("oauth_jwks_url", "")
@@ -498,9 +498,9 @@ class HybridTenantExtension(TenantExtension):
         """Resolve a credential to a provisioned tenant schema. Shared by every lane.
 
         Lane routing is by credential shape: a static key is matched exactly
-        (constant time) against the configured keys; a JWT-shaped token belongs
-        to the JWKS lane, which this build does not implement, so it is refused
-        with "Unknown credential" rather than being mistaken for a key.
+        (constant time) against the configured keys; a JWT-shaped token goes to
+        the JWKS lane and is verified there — refused with "Unknown credential"
+        when that lane is disabled — rather than being mistaken for a key.
         """
         key = context.api_key
         if not key:
