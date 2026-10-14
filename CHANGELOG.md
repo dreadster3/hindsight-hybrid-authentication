@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/dreadster3/hindsight-hybrid-authentication/compare/v0.1.0...v0.2.0) (2026-10-14)
+
+
+### Miscellaneous Chores
+
+* **deps:** update ghcr.io/vectorize-io/hindsight:latest-slim docker digest to f284d0d ([#18](https://github.com/dreadster3/hindsight-hybrid-authentication/issues/18)) ([da22aa3](https://github.com/dreadster3/hindsight-hybrid-authentication/commit/da22aa3e7ac3c0d2d71df2f3a6d28613077aa8ef))
+
 ## 0.1.0 (2026-10-11)
 
 
