@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/dreadster3/hindsight-hybrid-authentication/compare/v0.1.0...v0.2.0) (2026-10-14)
+
+
+### Miscellaneous Chores
+
+* **deps:** update python docker tag to v3.15 ([#13](https://github.com/dreadster3/hindsight-hybrid-authentication/issues/13)) ([bf1b631](https://github.com/dreadster3/hindsight-hybrid-authentication/commit/bf1b6318b40115987a24a538efe944a024fc97dd))
+
 ## 0.1.0 (2026-10-11)
 
 
