@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/dreadster3/hindsight-hybrid-authentication/compare/v0.1.0...v0.2.0) (2026-10-14)
+
+
+### Miscellaneous Chores
+
+* **release:** trigger release ([#15](https://github.com/dreadster3/hindsight-hybrid-authentication/issues/15)) ([ec2700a](https://github.com/dreadster3/hindsight-hybrid-authentication/commit/ec2700a830234d8b156ad43f1302764bb2577df3))
+
 ## 0.1.0 (2026-10-11)
 
 
