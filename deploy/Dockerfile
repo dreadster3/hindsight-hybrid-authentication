@@ -19,7 +19,7 @@
 # `:latest-slim` (linux/amd64 + linux/arm64), so two builds of this commit
 # produce the same image. Moving to a newer Hindsight is an explicit digest
 # bump, never a tag that silently moved underneath the deployment.
-FROM ghcr.io/vectorize-io/hindsight:latest-slim@sha256:c0bd6122a1d0d62dc5094ce43150780a28a96ec70109b44c688210231a5ac33a
+FROM ghcr.io/vectorize-io/hindsight:latest-slim@sha256:f284d0d63e92e993686e18c15f6e4a221cd80fdfd47625a7c5f6cd8568078440
 
 # Install into the server's virtualenv explicitly. It was created by `uv sync`
 # and ships no `pip` of its own, so a bare `pip install` would land in user
