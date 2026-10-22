@@ -156,10 +156,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # This trigger is a push, not a tag push, so metadata-action's usual `type=semver` auto-
-      # detection has no `refs/tags/...` to read and would emit nothing. Both tag lines therefore
+      # detection has no `refs/tags/...` to read and would emit nothing. All three tag lines therefore
       # pass the release tag in explicitly through `value=`, taken straight from the release-please
       # output — no version string is re-derived from git, so nothing can silently normalize a tag
-      # into a different one. Expected for the first release, v0.1.0: v0.1.0, 0.1, latest.
+      # into a different one. Expected tags for a release tag v0.3.0: v0.3.0, v0.3, v0, latest.
       # `latest` comes from the action itself: for a non-prerelease, semver emits it (flavour
       # `latest=auto`), so it is deliberately not written out as a raw tag — that also keeps a
       # prerelease from moving `latest`. If `tag_name` were ever empty, the lines below match
@@ -172,7 +172,8 @@ jobs:
           images: ghcr.io/dreadster3/hindsight-hybrid-authentication
           tags: |
             type=semver,pattern=v{{version}},value=${{ needs.release-please.outputs.tag_name }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
+            type=semver,pattern=v{{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
+            type=semver,pattern=v{{major}},value=${{ needs.release-please.outputs.tag_name }}
 
       # Context is the repo ROOT, not deploy/: the Dockerfile COPYs src/ into /app/extensions, and
       # a narrower context would break that copy. linux/amd64 only — the same platform the deploy
@@ -186,6 +187,7 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
           # GHA cache keeps the base-image pull and the uv pip layer warm between releases;
           # `ignore-error` so a cache outage cannot fail an otherwise good release.
           cache-from: type=gha
