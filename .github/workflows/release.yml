@@ -159,7 +159,7 @@ jobs:
       # detection has no `refs/tags/...` to read and would emit nothing. Both tag lines therefore
       # pass the release tag in explicitly through `value=`, taken straight from the release-please
       # output — no version string is re-derived from git, so nothing can silently normalize a tag
-      # into a different one. Expected for the first release, v0.1.0: v0.1.0, 0.1, latest.
+      # into a different one. Expected tags for a release tag v0.3.0: v0.3.0, v0.3, v0, latest.
       # `latest` comes from the action itself: for a non-prerelease, semver emits it (flavour
       # `latest=auto`), so it is deliberately not written out as a raw tag — that also keeps a
       # prerelease from moving `latest`. If `tag_name` were ever empty, the lines below match
