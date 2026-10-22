@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/dreadster3/hindsight-hybrid-authentication/compare/v0.3.0...v1.1.0) (2026-10-22)
+
+
+### Bug Fixes
+
+* **release:** correct docker semver tag patterns and add annotations ([#24](https://github.com/dreadster3/hindsight-hybrid-authentication/issues/24)) ([b635817](https://github.com/dreadster3/hindsight-hybrid-authentication/commit/b635817c25ceefd1bf271293da2f6c8facf54206))
+
 ## [0.3.0](https://github.com/dreadster3/hindsight-hybrid-authentication/compare/v0.2.0...v0.3.0) (2026-10-22)
 
 
