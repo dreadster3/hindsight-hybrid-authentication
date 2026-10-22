@@ -1,6 +1,6 @@
 [project]
 name = "hindsight-ext-hybrid-tenant"
-version = "0.2.0"
+version = "0.3.0"
 description = "Hindsight TenantExtension: static API keys and OAuth2/OIDC bearer tokens, each mapping to an isolated per-user PostgreSQL schema."
 readme = "README.md"
 authors = [

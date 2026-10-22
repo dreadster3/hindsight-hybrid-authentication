@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/dreadster3/hindsight-hybrid-authentication/compare/v0.2.0...v0.3.0) (2026-10-22)
+
+
+### Miscellaneous Chores
+
+* **deps:** update ghcr.io/vectorize-io/hindsight docker tag to v1.1.0 ([#22](https://github.com/dreadster3/hindsight-hybrid-authentication/issues/22)) ([e15da95](https://github.com/dreadster3/hindsight-hybrid-authentication/commit/e15da9579d8eb0a0d5cddef253bef64548b2263e))
+
 ## [0.2.0](https://github.com/dreadster3/hindsight-hybrid-authentication/compare/v0.1.0...v0.2.0) (2026-10-14)
 
 
