@@ -156,7 +156,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # This trigger is a push, not a tag push, so metadata-action's usual `type=semver` auto-
-      # detection has no `refs/tags/...` to read and would emit nothing. Both tag lines therefore
+      # detection has no `refs/tags/...` to read and would emit nothing. All three tag lines therefore
       # pass the release tag in explicitly through `value=`, taken straight from the release-please
       # output — no version string is re-derived from git, so nothing can silently normalize a tag
       # into a different one. Expected tags for a release tag v0.3.0: v0.3.0, v0.3, v0, latest.
