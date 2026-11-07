@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/dreadster3/hindsight-hybrid-authentication/compare/v1.1.0...v1.2.0) (2026-11-07)
+
+
+### Miscellaneous Chores
+
+* **deps:** lock file maintenance ([#28](https://github.com/dreadster3/hindsight-hybrid-authentication/issues/28)) ([4099d6d](https://github.com/dreadster3/hindsight-hybrid-authentication/commit/4099d6d8cc668b90bfc0c153cb9d5af36e8000ae))
+
 ## [1.1.0](https://github.com/dreadster3/hindsight-hybrid-authentication/compare/v0.3.0...v1.1.0) (2026-10-22)
 
 
