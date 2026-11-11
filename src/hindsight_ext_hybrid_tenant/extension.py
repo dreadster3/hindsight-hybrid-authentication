@@ -1,18 +1,21 @@
 """Hybrid tenant extension for Hindsight: static API keys and OAuth2/OIDC bearer tokens.
 
-One ``TenantExtension`` accepts both credential shapes a deployment needs — the
-env-declared static API keys used by headless clients, and OAuth2/OIDC bearer
-tokens (authentik) verified locally against a cached JWKS — and resolves either to a
-**per-user PostgreSQL schema** (``{prefix}_{user_id}``), provisioned lazily on
-first access. Isolation therefore sits below the bank mechanism: a client
-cannot reach another user's banks by guessing a bank id, because the schema is
-the boundary.
+One ``TenantExtension`` accepts every credential shape a deployment needs — the
+env-declared static API keys used by headless clients, OAuth2/OIDC bearer
+tokens (authentik) verified locally against a cached JWKS, and opaque bearer
+tokens validated by RFC 7662 introspection — and resolves each to a **per-user
+PostgreSQL schema** (``{prefix}_{user_id}``), provisioned lazily on first
+access. Isolation therefore sits below the bank mechanism: a client cannot
+reach another user's banks by guessing a bank id, because the schema is the
+boundary.
 
-Two lanes share one resolver. Lane A matches env-declared static API keys in
-constant time; lane B verifies OAuth2/OIDC (authentik) bearer tokens locally
-against a cached JWKS. Lane routing is by credential shape: a static key never
-contains ".", a JWT always has two. A credential that fails its lane is
-refused — there is no fallback to the other lane or to unauthenticated.
+Three lanes share one resolver. Lane A matches env-declared static API keys in
+constant time; lane B verifies OAuth2/OIDC (authentik) JWT bearer tokens
+locally against a cached JWKS; lane C validates any other (opaque) bearer token
+against the configured introspection endpoint. Lane routing is by credential
+shape: a static key never contains ".", a JWT always has exactly two, and
+anything else is opaque. A credential that fails its lane is refused — there
+is no fallback to another lane or to unauthenticated.
 
 Configuration via environment variables, following the loader convention
 (``HINDSIGHT_API_TENANT_<NAME>`` -> ``config["<name>"]``)::
@@ -23,11 +26,19 @@ Configuration via environment variables, following the loader convention
     HINDSIGHT_API_TENANT_OAUTH_ENABLED=false                     # optional, default false
     HINDSIGHT_API_TENANT_OAUTH_ISSUER=...                        # required when OAuth is enabled (https)
     HINDSIGHT_API_TENANT_OAUTH_AUDIENCE / _JWKS_URL / _GROUPS_ALLOWLIST  # optional
+    HINDSIGHT_API_TENANT_OAUTH_BASE_URL / _CLIENT_ID / _CLIENT_SECRET  # all three, or none
+
+The introspection lane activates only when all three
+``..._OAUTH_BASE_URL / _CLIENT_ID / _CLIENT_SECRET`` variables are set; a
+partial trio fails startup naming the missing field. There is no separate
+enable flag.
 
 Configuration is validated in ``__init__`` (the loader turns a failure into a
 hard load failure); when OAuth is enabled, ``on_startup`` warms the JWKS cache
 and fails startup if the issuer is unreachable — an unverifiable token is never
-accepted, so a misconfigured lane fails loudly rather than degrading.
+accepted, so a misconfigured lane fails loudly rather than degrading. The
+introspection lane makes no startup call (there is no credential to probe with)
+and resolves lazily on the first opaque token.
 
 Provenance: the static-key lane is ported from
 ``hindsight-extensions/static-keys-tenant``; the JWKS fetch/cache/kid-refresh
@@ -299,6 +310,30 @@ class HybridTenantExtension(TenantExtension):
             # authentik publishes per-application JWKS at {issuer}/jwks/.
             self.oauth_jwks_url = f"{self.oauth_issuer.rstrip('/')}/jwks/"
         self.oauth_groups_allowlist = _parse_csv(config.get("oauth_groups_allowlist", ""))
+
+        # Token introspection lane (RFC 7662). All three values or none: there is
+        # no separate enable flag, because a partial trio is always a
+        # misconfiguration — a URL with no credentials, or credentials with no
+        # endpoint. The error names the missing field and never echoes a value
+        # (the client secret is one of the three).
+        self.oauth_base_url = config.get("oauth_base_url", "").strip()
+        self.oauth_client_id = config.get("oauth_client_id", "").strip()
+        self.oauth_client_secret = config.get("oauth_client_secret", "").strip()
+        introspection_fields = {
+            "HINDSIGHT_API_TENANT_OAUTH_BASE_URL": self.oauth_base_url,
+            "HINDSIGHT_API_TENANT_OAUTH_CLIENT_ID": self.oauth_client_id,
+            "HINDSIGHT_API_TENANT_OAUTH_CLIENT_SECRET": self.oauth_client_secret,
+        }
+        introspection_missing = [name for name, value in introspection_fields.items() if not value]
+        self.oauth_introspection_enabled = not introspection_missing
+        if introspection_missing and len(introspection_missing) < len(introspection_fields):
+            raise ValueError(
+                "Token introspection is partially configured. All three of "
+                + ", ".join(introspection_fields)
+                + " are required together; missing "
+                + ", ".join(introspection_missing)
+                + "."
+            )
         oauth_enabled_raw = config.get("oauth_enabled", "").strip().lower()
         if oauth_enabled_raw in _TRUE_VALUES:
             self.oauth_enabled = True
@@ -466,6 +501,14 @@ class HybridTenantExtension(TenantExtension):
             _require_secure_url(self.oauth_issuer, "HINDSIGHT_API_TENANT_OAUTH_ISSUER")
             _require_secure_url(self.oauth_jwks_url, "HINDSIGHT_API_TENANT_OAUTH_JWKS_URL")
 
+        # Introspection credentials travel over the network, so the endpoint
+        # gets the same HTTPS-only rule as the issuer/JWKS above.
+        if self.oauth_introspection_enabled:
+            _require_secure_url(
+                self.oauth_base_url,
+                "HINDSIGHT_API_TENANT_OAUTH_BASE_URL",
+            )
+
         # Lane B's cached JWKS keys, constructed unconditionally so authenticate()
         # has no lazy-init branch to race on. Lane A never touches it.
         self._jwks = _JwksCache(self._fetch_jwks)
@@ -508,7 +551,10 @@ class HybridTenantExtension(TenantExtension):
         Lane routing is by credential shape: a static key is matched exactly
         (constant time) against the configured keys; a JWT-shaped token goes to
         the JWKS lane and is verified there — refused with "Unknown credential"
-        when that lane is disabled — rather than being mistaken for a key.
+        when that lane is disabled — rather than being mistaken for a key; any
+        other token goes to the introspection lane when configured. Every bearer
+        lane resolves to a user id and then flows through one mapping/schema
+        path, so the lanes cannot drift apart.
         """
         key = context.api_key
         if not key:
@@ -516,25 +562,21 @@ class HybridTenantExtension(TenantExtension):
 
         # Lane routing is by credential shape, not by config. Static keys are
         # rejected at startup if they contain ".", so a JWT-shaped token cannot
-        # be a configured key. Neither lane falls back to the other, nor to
+        # be a configured key. No lane falls back to another, nor to
         # unauthenticated: a credential that fails its lane is a 401.
         entry = self._match_static_key(key)
         if entry is not None:
             user_id, schema_name, key_id = entry.user_id, entry.schema_name, entry.key_id
-        elif _is_jwt_shaped(key):
-            if not self.oauth_enabled:
-                raise AuthenticationError("Unknown credential")
-            user_id = await self._verify_oauth_token(key)
+        else:
+            user_id = await self._resolve_bearer_user_id(key)
             schema_name = self._schema_name_for(user_id)
-            # The claim is attacker-controlled until the signature verifies, and
+            # The claim is attacker-controlled until the token verifies, and
             # even then it must not name a schema outside the tenant namespace
             # (invalid identifier character) or one Postgres would truncate into
             # a neighbour's. Same rules lane A enforces at startup.
             if not _SCHEMA_PREFIX_RE.match(schema_name) or len(schema_name) > _MAX_SCHEMA_LENGTH:
                 raise AuthenticationError("Token subject cannot be mapped to a valid tenant schema")
             key_id = None
-        else:
-            raise AuthenticationError("Invalid API key")
 
         await self._ensure_schema(schema_name)
 
@@ -542,14 +584,29 @@ class HybridTenantExtension(TenantExtension):
         # to attribute operations to a tenant / API key. api_key_id identifies
         # *the key* (see RequestContext), not the user — with multiple keys per
         # user it must distinguish which key authenticated. It is the derived,
-        # non-secret key_id, never the key itself. OAuth credentials are not
-        # static keys, so they leave api_key_id unset.
+        # non-secret key_id, never the key itself. Bearer-lane credentials (OAuth
+        # JWT, introspection) are not static keys, so they leave api_key_id unset.
         context.tenant_id = user_id
         if key_id is not None:
             context.api_key_id = key_id
         self._seen_users.setdefault(user_id, schema_name)
 
         return TenantContext(schema_name=schema_name)
+
+    async def _resolve_bearer_user_id(self, token: str) -> str:
+        """Route a non-static bearer token to its lane and return the resolved user id.
+
+        A JWT-shaped token (exactly two ``.``) always goes to the JWKS lane; any
+        other non-empty token is opaque and goes to the introspection lane when
+        it is configured. Unknown shapes/lanes are refused, never guessed.
+        """
+        if _is_jwt_shaped(token):
+            if not self.oauth_enabled:
+                raise AuthenticationError("Unknown credential")
+            return await self._verify_oauth_token(token)
+        if self.oauth_introspection_enabled:
+            return await self._introspect_token(token)
+        raise AuthenticationError("Invalid API key")
 
     def _match_static_key(self, key: str) -> _KeyEntry | None:
         """Return the entry whose configured key matches ``key``, or None.
@@ -579,19 +636,29 @@ class HybridTenantExtension(TenantExtension):
     async def on_startup(self) -> None:
         """Warm the JWKS cache and fail startup if the OAuth lane is unusable.
 
-        With OAuth disabled this is a no-op (static keys need no network); with
-        it enabled the issuer must be reachable *now*. An extension that starts
-        without keys would either accept tokens it cannot verify or reject every
-        one — both are worse than failing the deploy.
+        With no network-backed lane configured this is a no-op (static keys need
+        no network). With the JWKS lane enabled the issuer must be reachable
+        *now*: an extension that starts without keys would either accept tokens
+        it cannot verify or reject every one — both are worse than failing the
+        deploy. The introspection lane is deliberately not probed here: unlike
+        JWKS there is no credential to probe with, so it resolves lazily on the
+        first opaque token.
         """
-        if not self.oauth_enabled:
+        if not self.oauth_enabled and not self.oauth_introspection_enabled:
             return
-        logger.info("Initializing hybrid tenant extension (OAuth lane enabled)")
-        logger.info("OAuth issuer: %s", self.oauth_issuer)
+        if self.oauth_enabled:
+            logger.info("Initializing hybrid tenant extension (OAuth lane enabled)")
+            logger.info("OAuth issuer: %s", self.oauth_issuer)
+        if self.oauth_introspection_enabled:
+            logger.info("Initializing hybrid tenant extension (token introspection lane enabled)")
+            logger.info("Introspection endpoint: %s", self.oauth_base_url)
         if self._http is None:
             self._http = httpx.AsyncClient(
                 timeout=httpx.Timeout(JWKS_TIMEOUT_SECONDS, connect=JWKS_TIMEOUT_SECONDS)
             )
+        if not self.oauth_enabled:
+            # Introspection-only: no reachability probe (see docstring above).
+            return
         try:
             keys = await self._jwks.warm()
         except Exception as e:
@@ -605,7 +672,7 @@ class HybridTenantExtension(TenantExtension):
         logger.info("JWKS loaded with %d key(s)", len(keys))
 
     async def on_shutdown(self) -> None:
-        """Close the JWKS HTTP client, if one was created."""
+        """Close the shared HTTP client, if one was created."""
         if self._http is not None:
             await self._http.aclose()
             self._http = None
@@ -710,6 +777,76 @@ class HybridTenantExtension(TenantExtension):
         user_id = str(user_id).lower()
         logger.debug("OAuth user resolved: iss=%s user_id=%s", claims.get("iss"), user_id)
         return user_id
+
+    async def _introspect_token(self, token: str) -> str:
+        """Validate an opaque bearer token via RFC 7662 introspection; return its user id.
+
+        POSTs ``token=<token>`` form-encoded to the configured endpoint with HTTP
+        Basic auth (client id/secret). A token is accepted only when the response
+        says ``active`` is true; ``exp`` is enforced (with the same clock-skew
+        leeway as the JWKS lane) when present, and the groups allowlist applies
+        with the same semantics. A non-2xx response, transport failure or
+        malformed JSON is an ``AuthenticationError`` (401), never a 500.
+
+        Lazy by design: unlike the JWKS warm-up there is no credential to probe
+        with at startup, so the first opaque token pays the first network hop.
+        The token and the client secret are never logged or echoed.
+        """
+        if self._http is None:
+            raise AuthenticationError("Introspection lane is not initialized")
+
+        try:
+            # Same timeout discipline as the JWKS fetch: a hung IdP fails the
+            # request rather than pinning a worker on the first opaque token.
+            response = await self._http.post(
+                self.oauth_base_url,
+                data={"token": token},
+                auth=(self.oauth_client_id, self.oauth_client_secret),
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as e:
+            # Message carries no token/secret; the chain is for local logs only.
+            raise AuthenticationError("Token introspection request failed") from e
+
+        try:
+            claims = response.json()
+        except ValueError as e:
+            raise AuthenticationError("Token introspection returned malformed JSON") from e
+        if not isinstance(claims, dict):
+            raise AuthenticationError("Token introspection returned malformed JSON")
+
+        active = claims.get("active") is True
+        user_id = claims.get("preferred_username") or claims.get("sub")
+        logger.debug("Introspection result: active=%s user_present=%s", active, bool(user_id))
+        if not active:
+            raise AuthenticationError("Token is not active")
+
+        # Only exp is enforced: an opaque token has no nbf/iat the IdP promised,
+        # and PyJWT is not involved here, so the boundary is replicated by hand
+        # with the same leeway (expired once exp + leeway < now).
+        exp = claims.get("exp")
+        if exp is not None:
+            try:
+                expired = float(exp) + JWT_LEEWAY_SECONDS < time.time()
+            except (TypeError, ValueError) as e:
+                raise AuthenticationError(
+                    "Token introspection returned an invalid expiration"
+                ) from e
+            if expired:
+                raise AuthenticationError("Token has expired")
+
+        if self.oauth_groups_allowlist:
+            groups = claims.get("groups") or []
+            if isinstance(groups, str):
+                groups = [groups]
+            if not set(groups) & set(self.oauth_groups_allowlist):
+                raise AuthenticationError("Token is not a member of an allowed group")
+
+        if not user_id:
+            raise AuthenticationError(
+                "Token valid but missing both 'preferred_username' and 'sub' claims"
+            )
+        return str(user_id).lower()
 
     # ------------------------------------------------------------------
     # Schema management
