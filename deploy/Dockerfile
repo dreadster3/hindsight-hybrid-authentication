@@ -28,7 +28,8 @@ FROM ghcr.io/vectorize-io/hindsight:1.2.3-slim@sha256:411820087fd3a34fa71ecbc9ca
 # runtime dependencies in pyproject.toml.
 RUN uv pip install --python /app/api/.venv/bin/python --no-cache \
       'PyJWT[crypto]>=2.13.0' \
-      'httpx>=0.28.1'
+      'httpx>=0.28.1' \
+      'sentence-transformers>=5.0.0'
 
 # /app/extensions is ours — the base image does not use it — so nothing the
 # server ships can be shadowed by what lands here. The base sets no PYTHONPATH
